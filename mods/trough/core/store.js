@@ -30,6 +30,12 @@ export async function publishExclusive(dir, name, bytes) {
   catch (e) { if (e.code !== 'EEXIST') throw e; return false; }
   finally { await fs.unlink(tmp).catch(()=>{}); }
 }
+export async function replaceAtomic(dir,name,bytes) {
+  const tmp=path.join(dir,`.${name}.${random()}.tmp`);
+  await durableFile(tmp,bytes);
+  try { await fs.rename(tmp,path.join(dir,name)); await syncDir(dir); }
+  finally { await fs.unlink(tmp).catch(()=>{}); }
+}
 async function readNoFollow(file) {
   const st=await fs.lstat(file);
   if (!st.isFile()) throw new Error('expected regular file, not symlink or directory');
@@ -68,9 +74,10 @@ export async function ingestOne(root,name) {
       const original=await readNoFollow(dest);
       if (!original.equals(bytes)) throw new Error(`conflicting stored story id: ${read.story.id}`);
     }
-    await fs.unlink(input);
+    await fs.unlink(input).catch(e=>{if(e.code!=='ENOENT') throw e;});
     return {status:'stored',id:read.story.id};
   } catch (e) {
+    if (e.code==='ENOENT') return {status:'gone',file:name};
     const result=await reject(root,name,e.message,bytes);
     await fs.unlink(input).catch(()=>{});
     return result;
@@ -85,8 +92,10 @@ export async function ingest(root) {
 }
 export async function stored(root,id) {
   if (!ID.test(id)) throw new Error('invalid story id');
-  const read=await parseStoryFile(path.join(root,'store',`${id}.json`),`${id}.json`);
-  return {...read,hash:hash(read.bytes)};
+  const file=path.join(root,'store',`${id}.json`);
+  const read=await parseStoryFile(file,`${id}.json`);
+  const stat=await fs.stat(file);
+  return {...read,hash:hash(read.bytes),received_at:stat.birthtime.toISOString()};
 }
 async function withStateLock(root,fn) {
   await layout(root);
@@ -114,9 +123,7 @@ export async function setState(root,id,operation,until) {
     else if (operation==='undo') delete s.done_at;
     else if (operation==='snooze') { timestamp(until,'until'); s.snoozed_until=until; }
     else throw new Error('unknown state operation');
-    const dir=folder(root,'state'), tmp=path.join(dir,`.${id}.${random()}.tmp`);
-    await durableFile(tmp,Buffer.from(JSON.stringify({v:1,...s})+'\n'));
-    try { await fs.rename(tmp,path.join(dir,`${id}.json`)); await syncDir(dir); } finally { await fs.unlink(tmp).catch(()=>{}); }
+    await replaceAtomic(folder(root,'state'),`${id}.json`,Buffer.from(JSON.stringify({v:1,...s})+'\n'));
     return s;
   });
 }
@@ -125,10 +132,10 @@ export async function list(root) {
   const names=(await fs.readdir(folder(root,'store'))).filter(n=>ID.test(n.slice(0,-5))&&n.endsWith('.json'));
   const rows=[];
   for (const name of names) {
-    try { const {story,hash:story_hash}=await stored(root,name.slice(0,-5)); rows.push({story,story_hash,state:await readState(root,story.id)}); }
+    try { const {story,hash:story_hash,received_at}=await stored(root,name.slice(0,-5)); rows.push({story,story_hash,received_at,state:await readState(root,story.id)}); }
     catch { /* a damaged stored record never becomes an actionable card */ }
   }
-  rows.sort((a,b)=>Date.parse(b.story.occurred_at)-Date.parse(a.story.occurred_at)||a.story.id.localeCompare(b.story.id));
+  rows.sort((a,b)=>Date.parse(b.received_at)-Date.parse(a.received_at)||a.story.id.localeCompare(b.story.id));
   return rows;
 }
 export async function rejections(root) {
