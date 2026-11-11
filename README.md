@@ -28,7 +28,16 @@ Stories may declare `actions` with an `id`, `label`, installed `handler` ID, and
 
 Clicking an action opens a review sheet that shows the source claim and exact effects. A separate **Confirm action** click executes it and writes a receipt. CLI callers use `trough review STORY ACTION`, inspect its output, then `trough run REVIEW_TOKEN`. The run checks the story and handler again; a token can run only once. A failed or uncertain action remains visible in `receipts/` and is not retried automatically. Actions never answer a native agent or terminal question. The optional Firstmate package below sends asynchronous steering to a task inbox and answers Firstmate captain holds through Firstmate's own decision command.
 
-The pane supports `j`/`k` and arrows, `g`/`G`, `/` search, `f` filter picker, `r` read, `d` done, `z` one-hour snooze, Enter detail, and `a` action review. In the picker, `1`–`4` toggle unread, needs action, done, and snoozed; click values to toggle source, kind, severity, and subject. The header shows the active filters. Press `x` to clear every filter, including search. State filters combine with AND; selected values within one field combine with OR; fields and search combine with AND. With no state filter, the feed shows active unfinished stories. Unread means no read timestamp, needs action means a story has actions and is not done, and snoozed means its snooze time is in the future. `trough ls` uses the same rules: for example, `trough ls --unread --needs-action --source agent --source monitor --search build`. Use `--all` to include every state when no state flags are selected. Stored stories and state reload on folder changes and a periodic fallback, including changes from another pane copy.
+The pane supports `j`/`k` and arrows, `g`/`G`, `/` search, `f` filter picker, `r` read, `d` done, `z` one-hour snooze, Enter detail, and `a` action review.
+It opens in Inbox, which shows stories that are unread OR need action, including already read stories with unfinished actions.
+The header shows the active view and filters; `x` clears search and filters and returns to Inbox.
+In the picker, select Inbox or Active unfinished, use `1`–`4` to toggle unread, needs action, done, and snoozed, and click values to toggle source, kind, severity, and subject.
+Selecting a state toggle leaves Inbox; explicit state toggles combine with AND, while Active unfinished shows stories that are neither done nor currently snoozed.
+Selected values within one field combine with OR; the view or state toggles, other fields, and search combine with AND.
+Unread means no read timestamp, needs action means a story has actions and is not done, and snoozed means its snooze time is in the future.
+`trough ls --inbox` uses the pane's Inbox rule, and `trough ls --unread --needs-action --source agent --source monitor --search build` uses explicit AND state toggles.
+The CLI defaults to Active unfinished; `--all` includes every state when no state flags are selected, and `--inbox` cannot be combined with `--all` or state flags.
+Stored stories and state reload on folder changes and a periodic fallback, including changes from another pane copy.
 
 The pane shows relative times and refreshes their labels while open. Story detail shows the exact local time.
 

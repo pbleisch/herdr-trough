@@ -12,7 +12,7 @@ export default class Trough extends View {
   init(_props,cx) {
     this.dir=props()?.dir || `${home()}/.local/state/trough`;
     this.cli=`${appHome()}/mods/trough/bin/trough`;
-    this.handle=cx.focus_handle(); this.rows=[]; this.rejected=0; this.sel=null; this.filter={states:[],source:[],kind:[],severity:[],subject:[]}; this.filterPicker=false; this.filterField='source';
+    this.handle=cx.focus_handle(); this.rows=[]; this.rejected=0; this.sel=null; this.filter={inbox:true,states:[],source:[],kind:[],severity:[],subject:[]}; this.filterPicker=false; this.filterField='source';
     this.detail=false; this.search=false; this.typing=false; this.error=null; this.pick=null; this.review=null; this.receipts=[];
     this.resetSearchInput(cx);
     this.commentInput=InputState.new({placeholder:'Optional comment'});
@@ -103,18 +103,24 @@ export default class Trough extends View {
   filtered() { return visible(this.rows,{...this.filter,text:this.input.value()}); }
   changeFilter(field,value,cx) {
     const selected=this.filter[field];
+    if(field==='states') this.filter.inbox=false;
     this.filter[field]=selected.includes(value)?selected.filter(item=>item!==value):[...selected,value];
+    this.alignSelection();this.review=null;this.pick=null;cx.notify();
+  }
+  selectView(inbox,cx) {
+    this.filter.inbox=inbox;this.filter.states=[];
     this.alignSelection();this.review=null;this.pick=null;cx.notify();
   }
   clearFilters(cx) {
     for(const field of ['states','source','kind','severity','subject']) this.filter[field]=[];
+    this.filter.inbox=true;
     this.resetSearchInput(cx);this.search=false;this.typing=false;this.alignSelection();this.review=null;this.pick=null;cx.notify();
   }
   filterSummary() {
-    const parts=[...this.filter.states];
+    const parts=this.filter.inbox?['Inbox (unread OR needs action)']:this.filter.states.length?[...this.filter.states]:['Active unfinished'];
     for(const field of ['source','kind','severity','subject']) if(this.filter[field].length) parts.push(`${field}: ${this.filter[field].map(value=>field==='severity'?severityLabel(value):value).join(', ')}`);
     if(this.input.value()) parts.push(`search: ${this.input.value()}`);
-    return parts.join(' · ')||'current';
+    return parts.join(' · ');
   }
   alignSelection() { const shown=this.filtered(); if(!shown.some(r=>r.story.id===this.sel)) this.sel=shown[0]?.story.id??null; }
   selected() { return this.filtered().find(r=>r.story.id===this.sel); }
@@ -157,6 +163,10 @@ export default class Trough extends View {
     }
     const filterChoices=choices(this.rows,this.filterField).filter(Boolean);
     const filterPicker=this.filterPicker?v_flex().gap(5)
+      .child(h_flex().gap(5).children([
+        this.button('view-inbox','Inbox',cx=>this.selectView(true,cx),t,this.filter.inbox),
+        this.button('view-active','Active unfinished',cx=>this.selectView(false,cx),t,!this.filter.inbox&&!this.filter.states.length)
+      ]))
       .child(div().text_size(10).text_color(t.dim).child('States (AND): 1–4 toggle'))
       .child(h_flex().gap(5).children(STATES.map((state,i)=>this.button(`state-${i}`,`${i+1} ${state}`,cx=>this.changeFilter('states',state,cx),t,this.filter.states.includes(state)))))
       .child(h_flex().gap(5).children(['source','kind','severity','subject'].map(field=>this.button(`field-${field}`,`${field}${this.filter[field].length?` (${this.filter[field].length})`:''}`,cx=>{this.filterField=field;cx.notify();},t,this.filterField===field))))

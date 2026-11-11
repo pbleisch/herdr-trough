@@ -27,3 +27,18 @@ test('state predicates AND with each other and dimensions; selected values withi
   assert.deepEqual(visible(rows,{states:['done','needs action']},now),[]);
   assert.deepEqual(visible(rows,{states:['done'],text:'build'},now).map(r=>r.story.id),['one']);
 });
+test('Inbox unions unread and unfinished actions, then intersects field filters and search',()=>{
+  const now=Date.parse('2026-11-11T18:00:00Z'),future='2026-11-12T18:00:00Z';
+  const read={read_at:'2026-11-11T18:01:00Z'};
+  const rows=[
+    row('new',{title:'Build new'}),
+    row('waiting',{title:'Build waiting',actions:[{id:'open'}]},read),
+    row('quiet',{title:'Build quiet'},read),
+    row('done unread',{title:'Build done'}, {done_at:'2026-11-11T18:01:00Z'}),
+    row('done read',{title:'Build filed',actions:[{id:'open'}]}, {...read,done_at:'2026-11-11T18:01:00Z'}),
+    row('snoozed',{title:'Build snoozed'}, {snoozed_until:future}),
+    row('other',{title:'Other waiting',source:{id:'monitor',label:'Monitor'},actions:[{id:'open'}]},read)
+  ];
+  assert.deepEqual(visible(rows,{inbox:true},now).map(r=>r.story.id),['new','waiting','done unread','snoozed','other']);
+  assert.deepEqual(visible(rows,{inbox:true,source:['agent'],text:'build'},now).map(r=>r.story.id),['new','waiting','done unread','snoozed']);
+});

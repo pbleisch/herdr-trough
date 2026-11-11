@@ -5,11 +5,15 @@ export function visible(rows,filters,now=Date.now()) {
   const states=filters.states??[];
   return rows.filter(r=>{
     const s=r.story,st=r.state;
-    if (!states.length && !filters.all && (st.done_at||!active(r,now))) return false;
-    if (states.includes('unread') && st.read_at) return false;
-    if (states.includes('needs action') && (!s.actions?.length||st.done_at)) return false;
-    if (states.includes('done') && !st.done_at) return false;
-    if (states.includes('snoozed') && active(r,now)) return false;
+    if (filters.inbox) {
+      if (st.read_at && (!s.actions?.length||st.done_at)) return false;
+    } else {
+      if (!states.length && !filters.all && (st.done_at||!active(r,now))) return false;
+      if (states.includes('unread') && st.read_at) return false;
+      if (states.includes('needs action') && (!s.actions?.length||st.done_at)) return false;
+      if (states.includes('done') && !st.done_at) return false;
+      if (states.includes('snoozed') && active(r,now)) return false;
+    }
     for (const field of ['source','kind','severity','subject']) {
       const value=field==='source'?s.source.id:field==='subject'?s.subject?.key:s[field];
       const selected=filters[field];
