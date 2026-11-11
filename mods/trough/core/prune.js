@@ -58,6 +58,33 @@ async function pendingDeliveries(root) {
   return pending;
 }
 
+async function sidecars(root) {
+  return {reviews:await recordIndex(path.join(root,'reviews')),receipts:await recordIndex(path.join(root,'receipts')),
+    answers:await pendingAnswers(root),deliveries:await pendingDeliveries(root)};
+}
+
+async function removeStory(root,id,indexes,now) {
+  await replaceAtomic(path.join(root,'tombstones'),`${id}.json`,Buffer.from(JSON.stringify({v:1,pruned_at:new Date(now).toISOString()})+'\n'));
+  for(const file of [path.join(root,'inbox',`${id}.json`),path.join(root,'store',`${id}.json`),path.join(root,'state',`${id}.json`),
+    ...(indexes.reviews.get(id)??[]).map(x=>x.file),...(indexes.receipts.get(id)??[]).map(x=>x.file)])
+    await fs.unlink(file).catch(error=>{if(error.code!=='ENOENT') throw error;});
+}
+
+export async function deleteStory(root,id) {
+  if(!ID.test(id)) throw new Error('invalid story id');
+  await ingest(root);
+  return withStateLock(root,async()=>{
+    await stored(root,id);
+    const indexes=await sidecars(root),receipts=indexes.receipts.get(id)??[];
+    if(receipts.some(({record})=>record.outcome==='pending'||record.outcome==='uncertain'))
+      throw new Error('cannot delete story: a pending or uncertain receipt has an effect in flight');
+    if(indexes.answers.has(id)) throw new Error('cannot delete story: an answer has not been delivered');
+    if(indexes.deliveries.has(id)) throw new Error('cannot delete story: a delivery is pending');
+    await removeStory(root,id,indexes,Date.now());
+    return {id,deleted:true};
+  });
+}
+
 async function candidate(root,id,cutoff,now,indexes) {
   const {story}=await stored(root,id),state=await readState(root,id);
   if(!state.read_at||story.kind==='decision'&&story.decision?.options.length>0||story.actions?.length&&!state.done_at||story.outcome==='pending') return null;
@@ -69,7 +96,7 @@ async function candidate(root,id,cutoff,now,indexes) {
   if(reviews.some(({record})=>Date.parse(record.created_at)+300000>now)) return null;
   if(receipts.some(({record})=>record.outcome==='pending'||record.outcome==='uncertain')) return null;
   if(indexes.answers.has(id)||indexes.deliveries.has(id)) return null;
-  return {id,reviews:reviews.map(x=>x.file),receipts:receipts.map(x=>x.file)};
+  return {id};
 }
 
 async function expireTombstones(root,now) {
@@ -87,8 +114,7 @@ export async function prune(root,{olderThan,dryRun=false,now=Date.now()}={}) {
   if(!dryRun) await ingest(root);
   return withStateLock(root,async()=>{
     const selected=[];
-    const indexes={reviews:await recordIndex(path.join(root,'reviews')),receipts:await recordIndex(path.join(root,'receipts')),
-      answers:await pendingAnswers(root),deliveries:await pendingDeliveries(root)};
+    const indexes=await sidecars(root);
     for(const name of await files(path.join(root,'store'))) {
       if(!name.endsWith('.json')||!ID.test(name.slice(0,-5))) continue;
       const item=await candidate(root,name.slice(0,-5),now-age,now,indexes);
@@ -97,9 +123,7 @@ export async function prune(root,{olderThan,dryRun=false,now=Date.now()}={}) {
     selected.sort((a,b)=>a.id.localeCompare(b.id));
     if(dryRun) return {dry_run:true,older_than:ageText,ids:selected.map(x=>x.id),count:selected.length};
     for(const item of selected) {
-      await replaceAtomic(path.join(root,'tombstones'),`${item.id}.json`,Buffer.from(JSON.stringify({v:1,pruned_at:new Date(now).toISOString()})+'\n'));
-      for(const file of [path.join(root,'store',`${item.id}.json`),path.join(root,'state',`${item.id}.json`),...item.reviews,...item.receipts])
-        await fs.unlink(file).catch(error=>{if(error.code!=='ENOENT') throw error;});
+      await removeStory(root,item.id,indexes,now);
     }
     await expireTombstones(root,now);
     return {dry_run:false,older_than:ageText,ids:selected.map(x=>x.id),count:selected.length};

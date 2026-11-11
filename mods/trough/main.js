@@ -13,7 +13,7 @@ export default class Trough extends View {
     this.dir=props()?.dir || `${home()}/.local/state/trough`;
     this.cli=`${appHome()}/mods/trough/bin/trough`;
     this.handle=cx.focus_handle(); this.rows=[]; this.rejected=0; this.sel=null; this.filter={inbox:true,states:[],source:[],kind:[],severity:[],subject:[]}; this.filterPicker=false; this.filterField='source';
-    this.detail=false; this.search=false; this.typing=false; this.error=null; this.pick=null; this.review=null; this.receipts=[];
+    this.detail=false; this.search=false; this.typing=false; this.error=null; this.pick=null; this.review=null; this.receipts=[]; this.deleteConfirm=null; this.deleting=false;
     this.resetSearchInput(cx);
     this.commentInput=InputState.new({placeholder:'Optional comment'});
     this.commentInput.on('focus',(_e,cx)=>{this.commentTyping=true;cx.notify();});
@@ -79,6 +79,21 @@ export default class Trough extends View {
     const id=this.selected()?.story.id; if(!id) return;
     cx.spawn(async cx=>{try {await this.call([command,id,...extra]); await this.reload(cx);} catch(e){this.error=e.message;cx.notify();}});
   }
+  confirmDelete(cx) {
+    const id=this.selected()?.story.id;
+    if(!id) return;
+    this.detail=true; this.deleteConfirm=id; this.review=null; this.pick=null; cx.notify();
+  }
+  deleteSelected(cx) {
+    const id=this.selected()?.story.id;
+    if(!id||this.deleteConfirm!==id||this.deleting) return;
+    this.deleting=true;
+    cx.spawn(async cx=>{
+      try { await this.call(['delete',id]); this.deleteConfirm=null; await this.reload(cx); }
+      catch(e) { this.error=e.message; cx.notify(); }
+      finally { this.deleting=false; cx.notify(); }
+    });
+  }
   actionReview(action,cx,option) {
     const storyId=this.sel;
     cx.spawn(async cx=>{
@@ -122,9 +137,9 @@ export default class Trough extends View {
     if(this.input.value()) parts.push(`search: ${this.input.value()}`);
     return parts.join(' · ');
   }
-  alignSelection() { const shown=this.filtered(); if(!shown.some(r=>r.story.id===this.sel)) this.sel=shown[0]?.story.id??null; }
+  alignSelection() { const shown=this.filtered(); if(!shown.some(r=>r.story.id===this.sel)) this.sel=shown[0]?.story.id??null; if(this.deleteConfirm!==this.sel) this.deleteConfirm=null; }
   selected() { return this.filtered().find(r=>r.story.id===this.sel); }
-  move(delta,cx) { const rows=this.filtered(); if(!rows.length) return; const index=rows.findIndex(r=>r.story.id===this.sel); this.sel=rows[Math.max(0,Math.min(rows.length-1,index+delta))].story.id; cx.notify(); }
+  move(delta,cx) { const rows=this.filtered(); if(!rows.length) return; const index=rows.findIndex(r=>r.story.id===this.sel); this.sel=rows[Math.max(0,Math.min(rows.length-1,index+delta))].story.id; this.deleteConfirm=null; cx.notify(); }
   keys(e,cx) {
     if(this.typing||this.commentTyping) { if(e.key==='escape'){this.handle.focus();cx.notify();} return; }
     const k=e.key;
@@ -137,15 +152,16 @@ export default class Trough extends View {
     else if(k==='x') this.clearFilters(cx);
     else if(this.filterPicker && ['1','2','3','4'].includes(k)) this.changeFilter('states',STATES[Number(k)-1],cx);
     else if(k==='enter') {this.detail=!this.detail;cx.notify();}
-    else if(k==='escape') {this.detail=false;this.search=false;this.filterPicker=false;this.review=null;this.pick=null;cx.notify();}
+    else if(k==='escape') {this.detail=false;this.search=false;this.filterPicker=false;this.review=null;this.pick=null;this.deleteConfirm=null;cx.notify();}
     else if(k==='r') this.act(this.selected()?.state.read_at?'unread':'read',cx);
     else if(k==='d') this.act(this.selected()?.state.done_at?'undo':'done',cx);
+    else if(k==='shift-d') this.confirmDelete(cx);
     else if(k==='z') this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]);
     else if(k==='a') {const action=this.selected()?.story.actions?.[0];if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
   }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
   render(cx) {
-    const t=theme(),shown=this.filtered(),g=groups(shown),selected=this.selected(),unread=this.rows.filter(r=>!r.state.read_at&&!r.state.done_at).length;
+    const t=theme(),shown=this.filtered(),g=groups(shown),selected=this.selected(),unread=this.rows.filter(r=>!r.state.read_at).length;
     const groupNodes=[];
     for(const group of g) {
       if(group.items.length>1) groupNodes.push(h_flex().px(10).py(5).gap(6).bg(t.chrome).text_size(11).text_color(t.muted)
@@ -153,7 +169,7 @@ export default class Trough extends View {
       for(const row of group.items) {
         const s=row.story,st=row.state,on=this.sel===s.id;
         groupNodes.push(v_flex().id(`story-${s.id}`).px(10).py(8).gap(3).bg(on?t.selected:t.surface).border_b(1).border_color(t.border).cursor_pointer().hover(el=>el.bg(t.hover))
-          .on_click((_e,cx)=>{this.sel=s.id;this.detail=true;this.review=null;this.pick=null;this.handle.focus();cx.notify();})
+          .on_click((_e,cx)=>{this.sel=s.id;this.detail=true;this.review=null;this.pick=null;this.deleteConfirm=null;this.handle.focus();cx.notify();})
           .child(h_flex().gap(6).items_center().child(div().w(34).text_size(10).text_color(palette(s.severity,t)).child(severityLabel(s.severity)))
             .child(div().flex_1().truncate().font_semibold().text_color(st.read_at?t.muted:t.foreground).child(s.title))
             .child(div().text_size(10).text_color(t.dim).child(relativeTime(s.occurred_at))))
@@ -211,16 +227,24 @@ export default class Trough extends View {
         .child(h_flex().gap(6)
           .child(this.button('confirm-action',this.running?'Running…':'Confirm action',cx=>this.runReview(cx),t,true))
           .child(this.button('cancel-action','Cancel',cx=>{this.review=null;cx.notify();},t)))))
+      .when(this.deleteConfirm===selected.story.id,el=>el.child(v_flex().gap(5).p(10).rounded(6).border(1).border_color(t.blocked).bg(t.raised)
+        .child(div().font_semibold().text_color(t.foreground).child('Delete this story from Trough?'))
+        .child(div().text_size(11).text_color(t.muted).child('Its story, state, reviews, and receipts will be removed. The same ID is blocked from reappearing for 365 days.'))
+        .when(selected.story.kind==='decision'&&Boolean(selected.story.decision?.options.length),el=>el.child(div().text_size(11).text_color(t.muted).child('Deleting this open decision only hides it from Trough; it does not answer the decision.')))
+        .child(h_flex().gap(6)
+          .child(this.button('confirm-delete',this.deleting?'Deleting…':'Delete story',cx=>this.deleteSelected(cx),t,true))
+          .child(this.button('cancel-delete','Cancel',cx=>{this.deleteConfirm=null;cx.notify();},t)))))
       .child(h_flex().gap(6)
         .child(this.button('mark-read',selected.state.read_at?'Unread':'Read',cx=>this.act(selected.state.read_at?'unread':'read',cx),t))
         .child(this.button('mark-done',selected.state.done_at?'Undo':'Done',cx=>this.act(selected.state.done_at?'undo':'done',cx),t))
-        .child(this.button('snooze','Snooze 1h',cx=>this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]),t))):null;
+        .child(this.button('snooze','Snooze 1h',cx=>this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]),t))
+        .child(this.button('delete-story','Delete',cx=>this.confirmDelete(cx),t))):null;
     return v_flex().id('trough-root').track_focus(this.handle).size_full().min_h(0).bg(t.background).text_size(12)
       .on_key_down((e,cx)=>this.keys(e,cx)).on_mouse_down('left',()=>this.handle.focus())
       .child(header)
       .when(Boolean(this.error),el=>el.child(div().px(10).py(6).text_color(t.blocked).child(this.error)))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().children(groupNodes.length?groupNodes:[div().p(12).text_color(t.muted).child('No stories in this view')]))
       .when(Boolean(detail),el=>el.child(detail))
-      .child(div().px(10).py(5).text_size(10).text_color(t.dim).child('j/k move · Enter detail · / search · f filters · x clear · r read · d done · z snooze · a review action'));
+      .child(div().px(10).py(5).text_size(10).text_color(t.dim).child('j/k move · Enter detail · / search · f filters · x clear · r read · d done · D delete · z snooze · a review action'));
   }
 }

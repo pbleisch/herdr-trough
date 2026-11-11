@@ -5,10 +5,10 @@ import { rootDir, post, ingest, stored, setState, list, rejections } from '../co
 import { parseJson, validateStory } from '../core/schema.js';
 import { review, runReviewed, receipts } from '../core/actions.js';
 import { listProducers, runProducer } from '../core/producers.js';
-import { prune } from '../core/prune.js';
+import { prune, deleteStory } from '../core/prune.js';
 import { visible } from '../feed.js';
 
-const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN | receipts [STORY] | producers | produce ID\nGlobal: --dir DIR (or TROUGH_DIR). --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
+const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN | receipts [STORY] | producers | produce ID\nGlobal: --dir DIR (or TROUGH_DIR). --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
 function parse(argv) {
   const positional=[],opts={};
   for (let i=0;i<argv.length;i++) {
@@ -44,6 +44,7 @@ async function main() {
   }
   if (command==='ingest') { output(await ingest(root)); return; }
   if (command==='prune') { if(id||rest.length) throw new Error('prune takes no ID'); output(await prune(root,{olderThan:opts['older-than'],dryRun:opts['dry-run']})); return; }
+  if (command==='delete') { if(!id||rest.length) throw new Error('delete needs one story ID'); output(await deleteStory(root,id)); return; }
   if (command==='rejections') { output(await rejections(root)); return; }
   if (command==='producers') { if(id) throw new Error('producers takes no ID'); output(await listProducers(root)); return; }
   if (command==='produce') { if(!id||rest.length) throw new Error('produce needs a producer ID'); output(await runProducer(root,id)); return; }

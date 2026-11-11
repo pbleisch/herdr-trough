@@ -84,3 +84,45 @@ test('dry run preserves files; pruning removes sidecars and tombstones block re-
   await prune(dir,{now:NOW+366*day});
   assert.deepEqual(await fs.readdir(path.join(dir,'tombstones')),[]);
 });
+
+test('delete removes a story immediately, including an open decision, and blocks re-posting',async()=>{
+  const dir=await root(),record=story({kind:'decision',decision:{question_id:'choice',prompt:'Choose',options:[{id:'yes',label:'Yes',answer_text:'yes'},{id:'no',label:'No',answer_text:'no'}]}});
+  const id=await add(dir,record,{});
+  await fs.mkdir(path.join(dir,'reviews'));
+  await write(path.join(dir,'reviews','review.json'),{reviewed:{story_id:id}});
+  await write(path.join(dir,'receipts','receipt.json'),{story_id:id,outcome:'succeeded'});
+  const cli=path.resolve('mods/trough/bin/trough');
+  const run=(...args)=>spawnSync(process.execPath,[cli,'--dir',dir,...args],{encoding:'utf8'});
+  const deleted=run('delete',id);
+  assert.equal(deleted.status,0,deleted.stderr);
+  assert.deepEqual(JSON.parse(deleted.stdout),{id,deleted:true});
+  for(const file of [path.join(dir,'store',`${id}.json`),path.join(dir,'state',`${id}.json`),path.join(dir,'reviews','review.json'),path.join(dir,'receipts','receipt.json')])
+    await assert.rejects(fs.access(file),{code:'ENOENT'});
+  assert.deepEqual((await list(dir)).map(row=>row.story.id),[]);
+  await post(dir,Buffer.from(JSON.stringify(record)+'\n'));
+  assert.deepEqual((await list(dir)).map(row=>row.story.id),[]);
+  assert.ok((await fs.readdir(path.join(dir,'tombstones'))).includes(`${id}.json`));
+});
+
+test('delete refuses effects still in flight without removing the story or sidecars',async()=>{
+  const dir=await root(),cli=path.resolve('mods/trough/bin/trough');
+  const run=(id)=>spawnSync(process.execPath,[cli,'--dir',dir,'delete',id],{encoding:'utf8'});
+  const pending=await add(dir,story(),{});
+  await write(path.join(dir,'receipts','pending.json'),{story_id:pending,outcome:'pending'});
+  const uncertain=await add(dir,story(),{});
+  await write(path.join(dir,'receipts','uncertain.json'),{story_id:uncertain,outcome:'uncertain'});
+  const answer=await add(dir,story(),{});
+  const answerDir=path.join(dir,'answers','test'); await fs.mkdir(answerDir,{recursive:true});
+  await write(path.join(answerDir,'answer.json'),{story_id:answer});
+  const delivery=await add(dir,story(),{});
+  const deliveryDir=path.join(dir,'integrations','firstmate','home','deliveries'); await fs.mkdir(deliveryDir,{recursive:true});
+  await write(path.join(deliveryDir,'delivery.json'),{story_id:delivery,status:'queued'});
+  for(const [id,message] of [[pending,/pending or uncertain receipt/],[uncertain,/pending or uncertain receipt/],[answer,/answer has not been delivered/],[delivery,/delivery is pending/]]) {
+    const result=run(id);
+    assert.notEqual(result.status,0);
+    assert.match(result.stderr,message);
+    assert.equal((await stored(dir,id)).story.id,id);
+    await assert.rejects(fs.access(path.join(dir,'tombstones',`${id}.json`)),{code:'ENOENT'});
+  }
+  assert.equal((await fs.readdir(path.join(dir,'receipts'))).length,2);
+});

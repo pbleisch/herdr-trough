@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { constants } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { KEY } from './schema.js';
-import { layout, stored, publishExclusive, replaceAtomic } from './store.js';
+import { layout, stored, publishExclusive, replaceAtomic, withStateLock } from './store.js';
 import * as macos from './platform/macos.js';
 
 const text=v=>JSON.stringify(v,null,2)+'\n';
@@ -112,12 +112,13 @@ async function planFor(root,storyId,actionId,choice={}) {
   return {story_id:storyId,action_id:actionId,handler:action.handler,source:story.source,story_hash,plan};
 }
 export async function review(root,storyId,actionId,choice={}) {
-  await layout(root);
-  const reviewed=await planFor(root,storyId,actionId,choice),token=random();
-  const record={v:1,token,created_at:new Date().toISOString(),choice,reviewed};
-  await fs.mkdir(path.join(root,'reviews'),{recursive:true,mode:0o700});
-  await publishExclusive(path.join(root,'reviews'),`${token}.json`,Buffer.from(text(record)));
-  return {token,...reviewed};
+  return withStateLock(root,async()=>{
+    const reviewed=await planFor(root,storyId,actionId,choice),token=random();
+    const record={v:1,token,created_at:new Date().toISOString(),choice,reviewed};
+    await fs.mkdir(path.join(root,'reviews'),{recursive:true,mode:0o700});
+    await publishExclusive(path.join(root,'reviews'),`${token}.json`,Buffer.from(text(record)));
+    return {token,...reviewed};
+  });
 }
 async function executeAnswer(root,token,reviewed) {
   const {story}=await stored(root,reviewed.story_id),d=story.decision,source=story.source.id;
@@ -141,13 +142,19 @@ async function executeAnswer(root,token,reviewed) {
 }
 export async function runReviewed(root,token) {
   if(!/^[0-9a-f]{32}$/.test(token)) fail('invalid review token');
-  const record=JSON.parse(await fs.readFile(path.join(root,'reviews',`${token}.json`),'utf8'));
-  if(Date.now()-Date.parse(record.created_at)>300000) fail('review expired; review the action again');
-  const fresh=await planFor(root,record.reviewed.story_id,record.reviewed.action_id,record.choice);
-  if(hash(fresh)!==hash(record.reviewed)) fail('story or handler changed; review again');
   const receiptDir=path.join(root,'receipts');
-  const pending={v:1,receipt_id:token,created_at:new Date().toISOString(),story_id:fresh.story_id,source_id:fresh.source.id,question_id:fresh.plan.question_id,action_id:fresh.action_id,story_hash:fresh.story_hash,handler:fresh.handler,effects:fresh.plan.effects,outcome:'pending'};
-  if(!await publishExclusive(receiptDir,`${token}.json`,Buffer.from(text(pending)))) return JSON.parse(await fs.readFile(path.join(receiptDir,`${token}.json`),'utf8'));
+  const prepared=await withStateLock(root,async()=>{
+    const record=JSON.parse(await fs.readFile(path.join(root,'reviews',`${token}.json`),'utf8'));
+    if(Date.now()-Date.parse(record.created_at)>300000) fail('review expired; review the action again');
+    const fresh=await planFor(root,record.reviewed.story_id,record.reviewed.action_id,record.choice);
+    if(hash(fresh)!==hash(record.reviewed)) fail('story or handler changed; review again');
+    const pending={v:1,receipt_id:token,created_at:new Date().toISOString(),story_id:fresh.story_id,source_id:fresh.source.id,question_id:fresh.plan.question_id,action_id:fresh.action_id,story_hash:fresh.story_hash,handler:fresh.handler,effects:fresh.plan.effects,outcome:'pending'};
+    if(!await publishExclusive(receiptDir,`${token}.json`,Buffer.from(text(pending))))
+      return {existing:JSON.parse(await fs.readFile(path.join(receiptDir,`${token}.json`),'utf8'))};
+    return {fresh,pending,record};
+  });
+  if(prepared.existing) return prepared.existing;
+  const {fresh,pending,record}=prepared;
   let result,outcome='succeeded';
   try {
     if(fresh.plan.kind==='answer') result=await executeAnswer(root,token,fresh);

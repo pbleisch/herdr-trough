@@ -26,7 +26,7 @@ test('trough ls composes state flags, repeated field values, and search',async()
   assert.deepEqual(ids(dir,'--unread','--needs-action','--source','agent','--source','monitor'),['Build agent','Build monitor']);
   assert.deepEqual(ids(dir,'--done'),['No action']);
   assert.deepEqual(ids(dir,'--all','--source','agent'),['Build agent','No action','Read agent']);
-  assert.deepEqual(ids(dir,'--inbox'),['Build agent','Build monitor','No action','Read agent']);
+  assert.deepEqual(ids(dir,'--inbox'),['Build agent','Build monitor','Read agent']);
   assert.deepEqual(ids(dir,'--inbox','--source','agent','--search','Read agent'),['Read agent']);
   assert.deepEqual(ids(dir),['Build agent','Build monitor','Read agent']);
   const conflict=run(dir,'--inbox','--unread');

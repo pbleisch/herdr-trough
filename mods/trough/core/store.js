@@ -122,12 +122,12 @@ export async function readState(root,id) {
   catch(e) { if (e.code==='ENOENT') return {v:1}; throw e; }
 }
 export async function setState(root,id,operation,until) {
-  await stored(root,id);
   return withStateLock(root,async()=>{
+    await stored(root,id);
     const s=await readState(root,id);
     if (operation==='read') s.read_at=now();
     else if (operation==='unread') delete s.read_at;
-    else if (operation==='done') s.done_at=now();
+    else if (operation==='done') { s.done_at=now(); s.read_at??=s.done_at; }
     else if (operation==='undo') delete s.done_at;
     else if (operation==='snooze') { timestamp(until,'until'); s.snoozed_until=until; }
     else throw new Error('unknown state operation');

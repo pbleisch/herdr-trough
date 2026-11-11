@@ -34,11 +34,11 @@ test('Inbox unions unread and unfinished actions, then intersects field filters 
     row('new',{title:'Build new'}),
     row('waiting',{title:'Build waiting',actions:[{id:'open'}]},read),
     row('quiet',{title:'Build quiet'},read),
-    row('done unread',{title:'Build done'}, {done_at:'2026-11-11T18:01:00Z'}),
+    row('done read',{title:'Build done'}, {...read,done_at:'2026-11-11T18:01:00Z'}),
     row('done read',{title:'Build filed',actions:[{id:'open'}]}, {...read,done_at:'2026-11-11T18:01:00Z'}),
     row('snoozed',{title:'Build snoozed'}, {snoozed_until:future}),
     row('other',{title:'Other waiting',source:{id:'monitor',label:'Monitor'},actions:[{id:'open'}]},read)
   ];
-  assert.deepEqual(visible(rows,{inbox:true},now).map(r=>r.story.id),['new','waiting','done unread','snoozed','other']);
-  assert.deepEqual(visible(rows,{inbox:true,source:['agent'],text:'build'},now).map(r=>r.story.id),['new','waiting','done unread','snoozed']);
+  assert.deepEqual(visible(rows,{inbox:true},now).map(r=>r.story.id),['new','waiting','snoozed','other']);
+  assert.deepEqual(visible(rows,{inbox:true,source:['agent'],text:'build'},now).map(r=>r.story.id),['new','waiting','snoozed']);
 });

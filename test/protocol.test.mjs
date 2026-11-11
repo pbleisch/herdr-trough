@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { post, ingest, stored, list, setState, rejections, publishExclusive } from '../mods/trough/core/store.js';
 import { parseJson, validateStory } from '../mods/trough/core/schema.js';
+import { prune } from '../mods/trough/core/prune.js';
 
 const cli=path.resolve('mods/trough/bin/trough');
 const root=()=>fs.mkdtemp(path.join(os.tmpdir(),'trough-test-'));
@@ -64,6 +65,18 @@ test('operator state persists and independent changes are serialized',async()=>{
   assert.equal((await list(dir))[0].state.snoozed_until,until);
   assert.equal(run(dir,'undo',s.id).status,0);
   row=(await list(dir))[0]; assert.equal(row.state.done_at,undefined); assert.ok(row.state.read_at);
+});
+
+test('done marks an unread story read, removes it from Inbox, and makes it prunable',async()=>{
+  const dir=await root(),s=story(); await post(dir,bytes(s));
+  const before=(await list(dir))[0]; assert.equal(before.state.read_at,undefined);
+  assert.equal(run(dir,'ls','--inbox','--json').status,0);
+  const done=run(dir,'done',s.id); assert.equal(done.status,0,done.stderr);
+  const state=(await list(dir))[0].state;
+  assert.equal(state.read_at,state.done_at);
+  assert.deepEqual(JSON.parse(run(dir,'ls','--inbox','--json').stdout),[]);
+  assert.deepEqual(JSON.parse(run(dir,'ls','--unread','--json').stdout),[]);
+  assert.deepEqual((await prune(dir,{olderThan:'1d',now:Date.parse(state.done_at)+86400000})).ids,[s.id]);
 });
 
 test('simultaneous importers leave one card and no false rejection',async()=>{
