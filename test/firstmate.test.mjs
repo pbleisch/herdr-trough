@@ -33,20 +33,27 @@ async function setup() {
   await fs.writeFile(path.join(home,'state',`${holdId}.hold`),holdIdentity+'\n');
   const snapshot={backlog:{records:[
     {id:holdId,structured:true,state:'queued',kind:'ship',title:'Approve the launch',hold_kind:'captain',hold_reason:'Choose the launch outcome.',hold_set:'2026-11-11T17:00:00Z'},
-    {id:'report-one',structured:true,state:'done',kind:'scout',title:'Finished analysis',hold_kind:null,completion:{date:'2026-11-11'},report_path:'data/report-one/report.md'}
+    {id:'report-one',structured:true,state:'done',kind:'scout',title:'Finished analysis',hold_kind:null,completion:{date:'2026-11-11'},report_path:'data/report-one/report.md'},
+    {id:'merge-one',structured:true,state:'done',kind:'ship',title:'Improve merge handling'},
+    {id:'child-one',structured:true,state:'done',kind:'ship',title:'Ship child changes'}
   ]}};
   await fs.writeFile(path.join(home,'fixture-snapshot.json'),JSON.stringify(snapshot));
   await fs.mkdir(path.join(home,'data','report-one'));
   await fs.writeFile(path.join(home,'data','report-one','report.md'),'# Result\n');
   await fs.writeFile(path.join(home,'state','branch-outcomes.jsonl'),
-    JSON.stringify({seq:1,epoch:1794416400,task:'crew',verdict:'captain',summary:'A choice needs review.',silent:false})+'\n'+
-    JSON.stringify({seq:2,epoch:1794416500,task:'crew',verdict:'routine',summary:'Nothing to do.',silent:true})+'\n');
+    [
+      {seq:1,epoch:1794416400,task:'crew',verdict:'captain',summary:'A choice needs review. The first outcome explains why.',silent:false},
+      {seq:2,epoch:1794416500,task:'crew',verdict:'routine',summary:'Nothing to do.',silent:true},
+      {seq:3,epoch:1794416550,task:'crew',verdict:'captain',summary:'The deployment needs approval. New facts arrived.',silent:false},
+      {seq:4,epoch:1794416570,task:'merge-one',verdict:'captain',summary:'The pull request merged.',silent:false},
+      {seq:5,epoch:1794416580,task:holdId,verdict:'captain',summary:'Choose the launch outcome.',silent:false}
+    ].map(row=>JSON.stringify(row)).join('\n')+'\n');
   await fs.writeFile(path.join(home,'state','fleet-ledger.jsonl'),JSON.stringify({v:1,ts:1794416600,event:'task.merged',task:'merge-one',via:'pr',pr:'https://github.com/example/repo/pull/7'})+'\n');
   await fs.writeFile(path.join(home,'state','merge-one.pr-poll-merge-notified'),'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\nexample/repo\n7\n');
   const closed=path.join(home,'state','secondmate-prs','closed','mate-pr-repo-8-1794416700');
   await fs.mkdir(closed,{recursive:true});
   await fs.writeFile(path.join(closed,'mate-pr-repo-8.meta'),
-    'secondmate=mate\npr=https://git.example.com/example/repo/pulls/8\npr_head=abc123\nauthority=grant\noutcome=merged\nclosed_at=1794416700\n');
+    'secondmate=mate\npr=https://git.example.com/example/repo/pulls/8\npr_title=Improve encoder checks\npr_head=abc123\nauthority=grant\noutcome=merged\nclosed_at=1794416700\n');
   await fs.writeFile(path.join(home,'state','mate.status'),
     'done [key=merged-child-one] [at=1794416800]: merged child-one https://git.example.com/example/repo/pulls/9\n');
   await fs.mkdir(root);
@@ -54,13 +61,17 @@ async function setup() {
   return {home,root,dir,packageOptions:{home,...options}};
 }
 
-test('sync publishes stable merge, branch, hold and report stories and observes registry changes',async()=>{
+test('backfill publishes plain merge and branch stories once, groups outcomes, and observes registry changes',async()=>{
   const {home,root,packageOptions}=await setup();
-  await sync(root,packageOptions);
+  await sync(root,packageOptions,{backfillSince:'2026-11-01'});
   const first=await list(root);
   assert.equal(first.filter(row=>row.story.kind==='merge').length,3);
   assert.ok(first.some(row=>row.story.kind==='merge'&&row.story.summary.includes('standing grant')));
   assert.equal(first.filter(row=>row.story.kind==='agent').length,1);
+  assert.equal(first.find(row=>row.story.kind==='agent').story.title,'The deployment needs approval.');
+  assert.equal(first.find(row=>row.story.kind==='agent').story.group_key,'branch:crew');
+  assert.ok(first.some(row=>row.story.title==='Merged Improve encoder checks in example/repo #8'));
+  assert.ok(first.some(row=>row.story.title==='Merged Improve merge handling in example/repo #7'));
   assert.equal(first.filter(row=>row.story.kind==='report').length,1);
   assert.equal(first.filter(row=>row.story.kind==='hands_on').length,1);
   const decision=first.find(row=>row.story.kind==='decision');
@@ -80,6 +91,36 @@ test('sync publishes stable merge, branch, hold and report stories and observes 
     {task:holdId,words:'Proceed with launch',mode:'release'});
   await sync(root,packageOptions);
   assert.ok((await list(root)).some(row=>row.story.title===`Captain hold released: ${holdId}`));
+});
+
+test('first sync baselines historical records and later sync publishes only new records',async()=>{
+  const {home,root,packageOptions}=await setup();
+  await sync(root,packageOptions);
+  const initial=await list(root);
+  assert.deepEqual(initial.map(row=>row.story.kind).sort(),['decision','hands_on']);
+  const state=JSON.parse(await fs.readFile(path.join(root,'integrations','firstmate',
+    (await fs.readdir(path.join(root,'integrations','firstmate')))[0],'sync.json'),'utf8'));
+  assert.ok(Date.parse(state.baseline_at)>0);
+  assert.equal(state.baseline_ids.length,5);
+  const after=Math.floor(Date.parse(state.baseline_at)/1000);
+  await fs.appendFile(path.join(home,'state','branch-outcomes.jsonl'),
+    JSON.stringify({seq:6,epoch:after,task:'new-crew',verdict:'captain',summary:'The release needs a manual check. Inspect the logs.',silent:false})+'\n');
+  await fs.appendFile(path.join(home,'state','fleet-ledger.jsonl'),
+    JSON.stringify({v:1,ts:after,event:'task.merged',task:'new-merge',via:'pr',pr:'https://github.com/example/repo/pull/10',title:'Fix queue ordering'})+'\n');
+  await sync(root,packageOptions);
+  const later=await list(root);
+  assert.equal(later.filter(row=>row.story.kind==='merge').length,1);
+  assert.equal(later.filter(row=>row.story.kind==='agent').length,1);
+  assert.ok(later.some(row=>row.story.title==='The release needs a manual check.'));
+  assert.ok(later.some(row=>row.story.title==='Merged Fix queue ordering in example/repo #10'));
+  assert.equal(later.filter(row=>row.story.kind==='report').length,0);
+  await sync(root,packageOptions);
+  assert.equal((await list(root)).length,later.length);
+  await sync(root,packageOptions,{backfillSince:'2026-11-01'});
+  const backfilled=await list(root);
+  assert.equal(backfilled.filter(row=>row.story.kind==='merge').length,4);
+  assert.equal(backfilled.filter(row=>row.story.kind==='agent').length,2);
+  assert.equal(backfilled.filter(row=>row.story.kind==='report').length,1);
 });
 
 test('prompt delivery uses the exact task generation and durable inbox, then observes acknowledgement',async()=>{
@@ -144,8 +185,11 @@ test('reviewed prompt refuses a replacement generation before delivery',async()=
 test('trough-firstmate sync CLI reads the operator-listed home',async()=>{
   const {root}=await setup();
   const cli=path.join(project,'packages','firstmate','bin','trough-firstmate');
-  const run=spawnSync(process.execPath,[cli,'sync','--dir',root],{encoding:'utf8'});
+  const run=spawnSync(process.execPath,[cli,'sync','--dir',root,'--backfill','2026-11-01'],{encoding:'utf8'});
   assert.equal(run.status,0,run.stderr);
   assert.ok(JSON.parse(run.stdout).posted>0);
   assert.ok((await list(root)).some(row=>row.story.kind==='report'));
+  const invalid=spawnSync(process.execPath,[cli,'sync','--dir',root,'--backfill','2026-02-30'],{encoding:'utf8'});
+  assert.equal(invalid.status,1);
+  assert.match(invalid.stderr,/--backfill requires a valid date/);
 });

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { post, stored } from '../../mods/trough/core/store.js';
+import { list, post, stored } from '../../mods/trough/core/store.js';
 import { configuredHome, backlog, holdIdentity, integrationDir, iso, limited, sha, source, storyId, storyHash, writeJson } from './common.js';
 import { findNewRecord } from './index.js';
 
@@ -9,6 +9,46 @@ const atDate=value=>/^\d{4}-\d\d-\d\d$/.test(value??'')?`${value}T12:00:00Z`:nul
 const json=value=>Buffer.from(JSON.stringify(value)+'\n');
 const isHold=row=>row?.structured===true&&row?.hold_kind==='captain'&&row?.state!=='done';
 const base=(home,type,identity,occurredAt)=>({v:1,id:storyId(home,type,identity),source:source(home),occurred_at:occurredAt,severity:'notice'});
+const firstSentence=value=>clean(value,4096).trim().split(/(?<=[.!?])\s|\n/)[0].trim();
+const taskTitle=(rows,task)=>rows.find(row=>row.id===task)?.title?.trim()||'';
+function prLocation(value) {
+  try {
+    const url=new URL(value);
+    if(url.protocol!=='https:'||url.username||url.password) return null;
+    const parts=url.pathname.split('/').filter(Boolean);
+    const marker=parts.findIndex(part=>['pull','pulls','merge_requests'].includes(part));
+    const repo=parts.slice(0,marker>0&&parts[marker-1]==='-'?marker-1:marker>0?marker:2).join('/');
+    return {repo:repo||url.host,number:/^\d+$/.test(parts.at(-1)??'')?parts.at(-1):null};
+  } catch { return null; }
+}
+function mergeStory(home,rows,{task,when,url,title,detail,outcome='merged',authority,identity}) {
+  const location=url?prLocation(url):null;
+  if(url&&!location) return null;
+  const successful=['merged','merged-elsewhere'].includes(outcome);
+  const words=firstSentence(title||taskTitle(rows,task));
+  const target=url?`${location.repo}${location.number?` #${location.number}`:''}`:'local branch';
+  const heading=words|| (url?'pull request':task);
+  const action=successful?'Merged':`Merge ${outcome.replaceAll('-',' ')}`;
+  const summary=(detail?firstSentence(detail):
+    successful?`${heading} was merged ${url?`in ${location.repo}`:'locally'}.`:
+      `The merge of ${heading} in ${location.repo} ended as ${outcome.replaceAll('-',' ')}.`)+
+      (authority==='grant'?' The merge used a standing grant.':'');
+  return {...base(home,'merge',identity??(url?url:`${task}:local:${when}`),when),kind:'merge',
+    title:clean(`${action} ${heading}${url?` in ${target}`:' locally'}`,200),summary:clean(summary,4096),
+    severity:successful?'notice':'warning',outcome:successful?'succeeded':'failed',group_key:`merge:${task}`,
+    subject:{type:'task',key:clean(task,256)},
+    provenance:{task_id:clean(task,128),event_id:clean(identity??(url?url:`${task}:local:${when}`),256)},
+    ...(url?{links:[{id:'change',label:'Pull request',url}]}:{})};
+}
+function historySince(value) {
+  if(typeof value!=='string'||!/^\d{4}-\d\d-\d\d(?:T\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d))?$/.test(value)) throw new Error('--backfill requires a date or RFC 3339 timestamp');
+  const [year,month,day]=value.slice(0,10).split('-').map(Number);
+  if(new Date(Date.UTC(year,month-1,day)).toISOString().slice(0,10)!==value.slice(0,10)) throw new Error('--backfill requires a valid date');
+  const stamp=value.length===10?`${value}T00:00:00Z`:value;
+  const time=Date.parse(stamp);
+  if(!Number.isFinite(time)) throw new Error('--backfill requires a valid date or RFC 3339 timestamp');
+  return time;
+}
 
 async function readLines(file) {
   let body;
@@ -27,9 +67,14 @@ async function publish(root,story) {
   return true;
 }
 
-async function mergeStories(home) {
+async function mergeStories(home,rows) {
   const events=await readLines(path.join(home,'state','fleet-ledger.jsonl'));
-  const merged=[];
+  const candidates=[],representedTasks=new Set();
+  const add=(story,tasks,rank=0)=>{
+    if(!story) return;
+    candidates.push({story,rank});
+    for(const task of tasks) representedTasks.add(task);
+  };
   const closedDir=path.join(home,'state','secondmate-prs','closed');
   let closed=[];
   try { closed=await fs.readdir(closedDir,{withFileTypes:true}); }
@@ -43,14 +88,13 @@ async function mergeStories(home) {
     const fields={};
     for(const line of body.split('\n')) { const cut=line.indexOf('='); if(cut>0) fields[line.slice(0,cut)]=line.slice(cut+1); }
     if(!fields.pr?.startsWith('https://')||!fields.outcome||!/^\d+$/.test(fields.closed_at??'')) continue;
-    const task=metaName.slice(0,-'.meta'.length),successful=['merged','merged-elsewhere'].includes(fields.outcome);
-    const identity=successful?`${task}:${fields.pr}`:`${task}:${fields.pr}:${fields.outcome}:${fields.closed_at}`;
-    merged.push({...base(home,'merge',identity,iso(Number(fields.closed_at))),kind:'merge',
-      title:`${successful?'Merged':'Merge outcome'}: ${clean(task,120)}`,
-      summary:`Firstmate recorded ${fields.outcome} for ${fields.pr}${fields.authority==='grant'?' under a standing grant':''}.`,
-      severity:successful?'notice':'warning',outcome:successful?'succeeded':'failed',group_key:`merge:${fields.secondmate||task}`,
-      subject:{type:'task',key:clean(task,256)},provenance:{task_id:clean(task,128),event_id:identity,...(fields.pr_head?{head:clean(fields.pr_head,128)}:{})},
-      links:[{id:'change',label:'Pull request',url:fields.pr}]});
+    const record=metaName.slice(0,-'.meta'.length),task=fields.secondmate||record;
+    const successful=['merged','merged-elsewhere'].includes(fields.outcome);
+    const story=mergeStory(home,rows,{task,when:iso(Number(fields.closed_at)),url:fields.pr,
+      title:fields.pr_title||fields.title,detail:fields.outcome_detail,outcome:fields.outcome,authority:fields.authority,
+      identity:successful?fields.pr:`${fields.pr}:${fields.outcome}:${fields.closed_at}`});
+    if(story&&fields.pr_head) story.provenance.head=clean(fields.pr_head,128);
+    add(story,[task,record],3);
   }
   for (const event of events) {
     if(event?.v!==1||!event.task||!Number.isFinite(event.ts)) continue;
@@ -62,12 +106,9 @@ async function mergeStories(home) {
     }
     else continue;
     if(via==='pr'&&(!url||!url.startsWith('https://'))) continue;
-    const identity=via==='pr'?`${event.task}:${url}`:`${event.task}:local:${event.ts}`;
-    merged.push({...base(home,'merge',identity,iso(event.ts)),kind:'merge',title:`Merged ${clean(event.task,120)}`,
-      summary:via==='pr'?`Firstmate recorded the merge of ${url}.`:`Firstmate recorded a local branch landing for ${event.task}.`,
-      outcome:'succeeded',group_key:`merge:${event.task}`,subject:{type:'task',key:clean(event.task,256)},
-      provenance:{task_id:clean(event.task,128),event_id:identity},
-      ...(via==='pr'?{links:[{id:'change',label:'Merged change',url}]}:{})});
+    add(mergeStory(home,rows,{task:event.task,when:iso(event.ts),url,
+      title:event.pr_title||event.title,detail:via==='pr'?null:firstSentence(event.text),
+      identity:via==='pr'?url:`${event.task}:local:${event.ts}`}),[event.task],2);
   }
   const names=await fs.readdir(path.join(home,'state'));
   for(const name of names.filter(name=>name.endsWith('.status'))) {
@@ -78,11 +119,7 @@ async function mergeStories(home) {
       if(!match) continue;
       const task=match[1],url=match[2],epoch=Number(/\[at=(\d+)\]/.exec(line)?.[1]);
       const when=Number.isFinite(epoch)&&epoch>0?iso(epoch):(await fs.stat(file)).mtime.toISOString();
-      const identity=`${task}:${url}`;
-      merged.push({...base(home,'merge',identity,when),kind:'merge',title:`Merged ${clean(task,120)}`,
-        summary:`Firstmate recorded the merge of ${url} through ${parent}.`,outcome:'succeeded',group_key:`merge:${parent}`,
-        subject:{type:'task',key:clean(task,256)},provenance:{task_id:clean(task,128),event_id:identity},
-        links:[{id:'change',label:'Merged change',url}]});
+      add(mergeStory(home,rows,{task,when,url}),[task,parent],1);
     }
   }
   for (const name of names.filter(name=>name.endsWith('.pr-poll-merge-notified')).sort()) {
@@ -94,21 +131,27 @@ async function mergeStories(home) {
     const segment=provider==='forgejo'?'pulls':provider==='gitlab'?'-/merge_requests':'pull';
     if(provider==='gerrit') continue;
     const url=`https://${host}/${repo}/${segment}/${num}`;
-    const stat=await fs.stat(file),identity=`${task}:${url}`;
-    merged.push({...base(home,'merge',identity,stat.mtime.toISOString()),kind:'merge',title:`Merged ${clean(task,120)}`,
-      summary:`Firstmate recorded the merge of ${url}.`,outcome:'succeeded',group_key:`merge:${task}`,
-      subject:{type:'task',key:clean(task,256)},provenance:{task_id:clean(task,128),event_id:identity},
-      links:[{id:'change',label:'Merged change',url}]});
+    const stat=await fs.stat(file);
+    add(mergeStory(home,rows,{task,when:stat.mtime.toISOString(),url}),[task],0);
   }
-  return merged;
+  const unique=new Map();
+  for(const candidate of candidates) {
+    const key=candidate.story.id;
+    if(!unique.has(key)||unique.get(key).rank<candidate.rank) unique.set(key,candidate);
+  }
+  return {stories:[...unique.values()].map(entry=>entry.story),representedTasks};
 }
 
-async function branchStories(home) {
+async function branchStories(home,representedTasks) {
   const rows=await readLines(path.join(home,'state','branch-outcomes.jsonl'));
-  return rows.filter(row=>Number.isSafeInteger(row.seq)&&Number.isFinite(row.epoch)&&row.verdict==='captain'&&!row.silent)
-    .map(row=>({...base(home,'branch',String(row.seq),iso(row.epoch)),kind:'agent',
-      title:`Captain-relevant branch outcome for ${clean(row.task,110)}`,
-      summary:clean(row.summary,4096)||'Firstmate recorded a captain-relevant branch outcome.',
+  const latest=new Map();
+  for(const row of rows) {
+    if(!Number.isSafeInteger(row.seq)||!Number.isFinite(row.epoch)||row.verdict!=='captain'||row.silent||!row.task||representedTasks.has(row.task)) continue;
+    if(!latest.has(row.task)||latest.get(row.task).seq<row.seq) latest.set(row.task,row);
+  }
+  return [...latest.values()].map(row=>({...base(home,'branch',String(row.seq),iso(row.epoch)),kind:'agent',
+      title:clean(firstSentence(row.summary)||`Outcome for ${row.task}`,200),
+      summary:clean(row.summary,4096)||`Firstmate recorded an outcome for ${row.task}.`,
       severity:'warning',group_key:`branch:${row.task}`,subject:{type:'task',key:clean(row.task,256)},
       provenance:{task_id:clean(row.task,128),event_id:`branch:${row.seq}`}}));
 }
@@ -234,8 +277,9 @@ async function observeDeliveries(home,root) {
   return stories;
 }
 
-export async function sync(root,options) {
+export async function sync(root,options,{backfillSince}={}) {
   const home=configuredHome(options),dir=integrationDir(root,home),lock=path.join(dir,'.sync.lock');
+  const backfillAt=backfillSince===undefined?null:historySince(backfillSince);
   await fs.mkdir(dir,{recursive:true,mode:0o700});
   try { await fs.mkdir(lock,{mode:0o700}); }
   catch(error) { if(error.code==='EEXIST') throw new Error('Firstmate sync is already running'); throw error; }
@@ -244,6 +288,9 @@ export async function sync(root,options) {
     try { state={...state,...JSON.parse(await fs.readFile(path.join(dir,'sync.json'),'utf8'))}; }
     catch(error) { if(error.code!=='ENOENT') throw error; }
     const rows=await backlog(home),names=await projectNames(home),now=new Date().toISOString();
+    const firstSync=!state.baseline_at,baselineAt=state.baseline_at??now;
+    const cutoff=backfillAt??Date.parse(baselineAt);
+    if(!Number.isFinite(cutoff)) throw new Error('invalid Firstmate sync baseline');
     const holds=await holdStories(home,root,options,rows);
     const projects=projectChanges(home,state,names,now);
     const byId=new Map(rows.map(row=>[row.id,row]));
@@ -259,8 +306,19 @@ export async function sync(root,options) {
         provenance:{task_id:task,event_id:identity},decision:{question_id:`resolution_${sha(identity).slice(0,16)}`,prompt:`The captain hold on ${task} is ${mode}.`,options:[]}});
     }
     const pending=[...(state.pending_events??[]),...projects.events,...resolutions];
-    await writeJson(dir,'sync.json',{v:1,projects:names,project_generations:projects.generations,holds:holds.current,pending_events:pending});
-    const stories=[...pending,...await mergeStories(home),...await branchStories(home),...holds.stories.map(entry=>entry.story),...await reportStories(home,rows),...await observeDeliveries(home,root)];
+    const merges=await mergeStories(home,rows);
+    const priorDecisions=(await list(root)).filter(row=>row.story.kind==='decision'&&row.story.source.id===source(home).id)
+      .map(row=>row.story.provenance?.task_id).filter(Boolean);
+    const represented=new Set([...merges.representedTasks,...Object.keys(holds.current),...priorDecisions]);
+    const allHistory=[...merges.stories,...await branchStories(home,represented),...await reportStories(home,rows)];
+    const baselineIds=firstSync?allHistory.map(story=>story.id):state.baseline_ids??[];
+    const historicalIds=new Set(baselineIds);
+    const history=allHistory.filter(story=>backfillAt===null?
+      !historicalIds.has(story.id)&&Date.parse(story.occurred_at)>=Math.floor(cutoff/1000)*1000:
+      Date.parse(story.occurred_at)>=cutoff);
+    await writeJson(dir,'sync.json',{v:1,baseline_at:baselineAt,baseline_ids:baselineIds,projects:names,
+      project_generations:projects.generations,holds:holds.current,pending_events:pending});
+    const stories=[...pending,...history,...holds.stories.map(entry=>entry.story),...await observeDeliveries(home,root)];
     let posted=0;
     for(const story of stories) if(await publish(root,story)) posted++;
     for(const {story,routeOptions} of holds.stories) {
@@ -271,7 +329,8 @@ export async function sync(root,options) {
         hold_identity:story.actions[0].args.hold_identity,options:routeOptions};
       await writeJson(path.join(dir,'routes'),`${story.id}.json`,route);
     }
-    await writeJson(dir,'sync.json',{v:1,projects:names,project_generations:projects.generations,holds:holds.current,pending_events:[]});
+    await writeJson(dir,'sync.json',{v:1,baseline_at:baselineAt,baseline_ids:baselineIds,projects:names,
+      project_generations:projects.generations,holds:holds.current,pending_events:[]});
     return {home,stories:stories.length,posted};
   } finally { await fs.rmdir(lock); }
 }

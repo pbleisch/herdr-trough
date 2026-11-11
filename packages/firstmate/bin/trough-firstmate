@@ -6,7 +6,7 @@ import { rootDir } from '../../../mods/trough/core/store.js';
 import { sync } from '../sync.js';
 
 const packagePath=path.resolve(fileURLToPath(new URL('../index.js',import.meta.url)));
-const usage='usage: trough-firstmate sync [--dir TROUGH_DIR] [--home FIRSTMATE_HOME] [--interval-seconds N]';
+const usage='usage: trough-firstmate sync [--dir TROUGH_DIR] [--home FIRSTMATE_HOME] [--backfill SINCE] [--interval-seconds N]';
 
 async function main() {
   const argv=process.argv.slice(2),command=argv.shift();
@@ -15,7 +15,7 @@ async function main() {
   const flags={};
   while(argv.length) {
     const flag=argv.shift();
-    if(!['--dir','--home','--interval-seconds'].includes(flag)||!argv.length||flags[flag]) throw new Error(usage);
+    if(!['--dir','--home','--backfill','--interval-seconds'].includes(flag)||!argv.length||flags[flag]) throw new Error(usage);
     flags[flag]=argv.shift();
   }
   const root=rootDir(flags['--dir']);
@@ -28,8 +28,10 @@ async function main() {
   if(flags['--home']) options={...options,home:flags['--home']};
   const interval=flags['--interval-seconds'];
   if(interval!==undefined&&(!/^\d+$/.test(interval)||Number(interval)<1)) throw new Error('--interval-seconds requires a positive integer');
+  let backfillSince=flags['--backfill'];
   do {
-    process.stdout.write(JSON.stringify(await sync(root,options))+'\n');
+    process.stdout.write(JSON.stringify(await sync(root,options,{backfillSince}))+'\n');
+    backfillSince=undefined;
     if(interval===undefined) break;
     await new Promise(resolve=>setTimeout(resolve,Number(interval)*1000));
   } while(true);
