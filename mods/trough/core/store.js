@@ -12,7 +12,7 @@ const random = () => crypto.randomBytes(8).toString('hex');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export async function layout(root) {
-  for (const dir of [root, ...['inbox','store','state','rejected','receipts','answers'].map(n => folder(root,n))]) {
+  for (const dir of [root, ...['inbox','store','state','rejected','receipts','answers','tombstones'].map(n => folder(root,n))]) {
     await fs.mkdir(dir, {recursive:true, mode:0o700});
     if (!(await fs.lstat(dir)).isDirectory()) throw new Error(`not a directory: ${dir}`);
     await fs.chmod(dir,0o700);
@@ -64,11 +64,19 @@ async function reject(root,name,reason,bytes) {
   return {status:'rejected',file:name,reason:String(reason)};
 }
 export async function ingestOne(root,name) {
+  return withStateLock(root,()=>ingestOneLocked(root,name));
+}
+async function ingestOneLocked(root,name) {
   const input=path.join(root,'inbox',name);
   let bytes;
   try {
     if (!/^[^.][^/]*\.json$/.test(name)) throw new Error('expected visible .json file');
     const read=await parseStoryFile(input,name); bytes=read.bytes;
+    const tombstoned=await fs.access(path.join(root,'tombstones',name)).then(()=>true,e=>{if(e.code==='ENOENT') return false; throw e;});
+    if(tombstoned) {
+      await fs.unlink(input);
+      return {status:'pruned',id:read.story.id};
+    }
     const dest=path.join(root,'store',name);
     if (!await publishExclusive(folder(root,'store'),name,bytes)) {
       const original=await readNoFollow(dest);
@@ -97,7 +105,7 @@ export async function stored(root,id) {
   const stat=await fs.stat(file);
   return {...read,hash:hash(read.bytes),received_at:stat.birthtime.toISOString()};
 }
-async function withStateLock(root,fn) {
+export async function withStateLock(root,fn) {
   await layout(root);
   const lock=path.join(root,'state','.lock');
   let owned=false;

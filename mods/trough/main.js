@@ -35,6 +35,9 @@ export default class Trough extends View {
       cx.notify();
     });
     cx.timer.every(1000,cx=>this.pollProducers(cx));
+    this.pruning=false;
+    this.prune(cx);
+    cx.timer.every(3600000,cx=>this.prune(cx));
     cx.spawn(async cx=>{for (;;) { const cmd=await nextCommand(); if(cmd==='focus') this.handle.focus(); cx.notify(); }});
   }
   async call(args) { const r=await exec('node',[this.cli,'--dir',this.dir,...args],{timeout:args[0]==='produce'?120000:30000}); if(r.code!==0) throw new Error(r.stderr.trim()||`trough exited ${r.code}`); return r.stdout; }
@@ -56,6 +59,15 @@ export default class Trough extends View {
         } finally { this.producerSchedule.complete(item.id); cx.notify(); }
       });
     }
+  }
+  prune(cx) {
+    if(this.pruning) return;
+    this.pruning=true;
+    cx.spawn(async cx=>{
+      try { await this.call(['prune']); await this.reload(cx); }
+      catch(error) { this.error=error.message; cx.notify(); }
+      finally { this.pruning=false; }
+    });
   }
   async reload(cx) {
     if(this.loading) return; this.loading=true;
