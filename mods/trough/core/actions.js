@@ -60,7 +60,7 @@ function validateArgs(args,schema) {
     if(rule.enum&&!rule.enum.includes(args[k])) fail(`${k} outside allowed values`);
   }
 }
-async function loadConfig(root) {
+export async function loadConfig(root) {
   let raw;
   try { raw=JSON.parse(await fs.readFile(path.join(root,'handlers.json'),'utf8')); }
   catch(e) { if(e.code==='ENOENT') return {v:1,handlers:{},answer_routes:{},packages:[]}; throw e; }
@@ -76,8 +76,8 @@ async function registry(root) {
     if(typeof file!=='string'||!path.isAbsolute(file)) fail('package path must be absolute');
     if(!plain(options)) fail('package options must be an object');
     const module=await import(pathToFileURL(file).href);
-    if(typeof module.handlers!=='function') fail(`package ${file} must export handlers()`);
-    const entries=await module.handlers(options);
+    if(typeof module.handlers!=='function'&&typeof module.producer!=='function') fail(`package ${file} must export handlers() or producer()`);
+    const entries=module.handlers?await module.handlers(options):{};
     if(!plain(entries)) fail(`package ${file} returned no handlers`);
     Object.assign(packages,entries);
   }

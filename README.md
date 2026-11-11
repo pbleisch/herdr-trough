@@ -62,7 +62,7 @@ Holds without configured options are view-only decision cards because Firstmate'
 
 Run `packages/firstmate/bin/trough-firstmate sync --dir "$TROUGH_DIR"` to publish changes.
 The first sync records a history baseline and publishes current captain holds. Later syncs publish newer branch outcomes, merges, and finished reports. To import older records explicitly, run `packages/firstmate/bin/trough-firstmate sync --dir "$TROUGH_DIR" --backfill YYYY-MM-DD` (an RFC 3339 timestamp also works). Backfill applies to that invocation only.
-The command also accepts `--home` for an explicit home and `--interval-seconds N` for a persistent producer, or a scheduler can invoke a single sync repeatedly.
+While the Trough pane is open, its configured Firstmate producer syncs on opening and every two minutes. Set `"sync_interval_seconds": N` in the package's `options` for another positive integer interval. The pane shows the last run and last error in its header. The command also accepts `--home` for an explicit home and `--interval-seconds N` for a persistent producer outside the pane.
 It reads the local backlog snapshot, branch outcomes, merge records, and project registry without changing Firstmate tracked files.
 The optional Firstmate `config/fleet-ledger` flag adds merge and status history to the feed when enabled by the operator.
 The first sync also establishes a project registry baseline; later additions and removals create project stories. Branch outcomes already represented by a merge or captain decision are omitted, and repeated outcomes for one task share a group.

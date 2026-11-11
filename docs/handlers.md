@@ -1,6 +1,6 @@
 # Operator handlers
 
-`$TROUGH_DIR/handlers.json` is the operator's configuration file. Story JSON can name a handler but cannot install one. Trough loads this file only for action review and execution. An absent file leaves the built-in handlers available. Handler IDs in `handlers` override built-ins; configured packages can add handlers or override built-ins. Treat this file and any package modules as trusted local code. Protect them from untrusted writers.
+`$TROUGH_DIR/handlers.json` is the operator's configuration file. Story JSON can name a handler but cannot install one. Trough loads this file for action review and execution and for pane producers. An absent file leaves the built-in handlers available. Handler IDs in `handlers` override built-ins; configured packages can add handlers or override built-ins. Treat this file and any package modules as trusted local code. Protect them from untrusted writers.
 
 ```json
 {
@@ -34,8 +34,8 @@ For a decision story, put `"answer_routes":{"<story-id>":{"source_id":"<source-i
 
 An optional integration package is an absolute path in `packages`.
 An entry can be a path string, or `{"path":"/absolute/package/index.js","options":{"home":"/absolute/firstmate-home"}}` when the package needs trusted operator configuration.
-It exports `handlers(options)` returning an object keyed by handler ID.
-Each descriptor has `args` (the same typed schema), `effects` (declared effect classes), `plan({story,action,args,root,choice})`, and `run({root,reviewed,choice,token})`.
+It can export `handlers(options)` returning an object keyed by handler ID, `producer(options)` returning `{name, interval_seconds, run({root})}`, or both. The pane invokes each listed producer when opened and on its interval while open. `interval_seconds` is a positive integer. The core CLI exposes `producers` and `produce ID`; `produce` serializes runs with a lock under the Trough data directory, skips runs already completed within the interval, and records the last run and error there. A failed producer does not stop other producers or the feed.
+Each handler descriptor has `args` (the same typed schema), `effects` (declared effect classes), `plan({story,action,args,root,choice})`, and `run({root,reviewed,choice,token})`.
 `plan` must return a serializable object with an `effects` string array spelling out the exact targets and changes.
 Trough stores that plan with the review token and compares it with a fresh plan before calling `run`.
 Packages are loaded only if listed in operator configuration.

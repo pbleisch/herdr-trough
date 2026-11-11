@@ -3,10 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { configuredHome, integrationDir, slug, liveTask, holdIdentity, backlog, command, writeJson, storyHash, limited } from './common.js';
+import { sync } from './sync.js';
 
 const promptArgs={task_id:{type:'string',required:true,max_length:128},spawn_gen:{type:'string',required:true,max_length:128},text:{type:'string',required:true,max_length:8192}};
 const decisionArgs={task_id:{type:'string',required:true,max_length:128},hold_identity:{type:'string',required:true,max_length:128}};
 const recordName=/^[0-9]+\.msg$/;
+
+export function producer(options) {
+  const interval=options?.sync_interval_seconds??120;
+  if(!Number.isSafeInteger(interval)||interval<1) throw new Error('sync_interval_seconds must be a positive integer');
+  return {name:'Firstmate',interval_seconds:interval,run:({root})=>sync(root,options)};
+}
 
 async function inboxNames(home,taskId) {
   const dir=path.join(home,'state',`${taskId}.inbox`);

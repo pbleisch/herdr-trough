@@ -2,6 +2,7 @@ import { View, div } from 'gpui-kit';
 import { v_flex, h_flex, InputState, Input } from 'gpui-base';
 import { exec, watchFolder, theme, home, appHome, props, nextCommand } from 'herdr';
 import { VIEWS, visible, groups, choices } from './feed.js';
+import { ProducerSchedule } from './producer-schedule.js';
 
 const fmt=iso=>{ try { return new Date(iso).toLocaleString(); } catch { return iso; } };
 const cycle=(all,current)=>all[(all.indexOf(current)+1)%all.length];
@@ -26,9 +27,32 @@ export default class Trough extends View {
       for (;;) { try { await watchFolder(this.dir); await this.reload(cx); } catch { break; /* timer remains the fallback */ } }
     });
     cx.timer.every(10000,cx=>this.reload(cx));
+    this.producers=[]; this.producerHealth=new Map(); this.producerSetupError=null;
+    cx.spawn(async cx=>{
+      try {
+        this.producers=JSON.parse(await this.call(['producers']));
+        this.producerSchedule=new ProducerSchedule(this.producers);
+        for(const item of this.producers) this.producerHealth.set(item.id,item.status);
+        this.pollProducers(cx);
+      } catch(error) { this.producerSetupError=error.message; }
+      cx.notify();
+    });
+    cx.timer.every(1000,cx=>this.pollProducers(cx));
     cx.spawn(async cx=>{for (;;) { const cmd=await nextCommand(); if(cmd==='focus') this.handle.focus(); cx.notify(); }});
   }
-  async call(args) { const r=await exec('node',[this.cli,'--dir',this.dir,...args],{timeout:30000}); if(r.code!==0) throw new Error(r.stderr.trim()||`trough exited ${r.code}`); return r.stdout; }
+  async call(args) { const r=await exec('node',[this.cli,'--dir',this.dir,...args],{timeout:args[0]==='produce'?120000:30000}); if(r.code!==0) throw new Error(r.stderr.trim()||`trough exited ${r.code}`); return r.stdout; }
+  pollProducers(cx) {
+    for(const item of this.producerSchedule?.due(Date.now())??[]) {
+      cx.spawn(async cx=>{
+        try {
+          const result=JSON.parse(await this.call(['produce',item.id]));
+          if(!result.busy) this.producerHealth.set(item.id,result.status);
+        } catch(error) {
+          this.producerHealth.set(item.id,{last_run:new Date().toISOString(),last_error:error.message});
+        } finally { this.producerSchedule.complete(item.id); cx.notify(); }
+      });
+    }
+  }
   async reload(cx) {
     if(this.loading) return; this.loading=true;
     try { this.rows=JSON.parse(await this.call(['ls','--all','--json'])); this.receipts=JSON.parse(await this.call(['receipts'])); this.rejected=JSON.parse(await this.call(['rejections'])).length; this.error=null; this.alignSelection(); }
@@ -106,6 +130,11 @@ export default class Trough extends View {
         .child(this.button('refresh','↻',cx=>this.reload(cx),t)))
       .child(h_flex().gap(5).children(VIEWS.map(v=>this.button(`view-${v}`,v,cx=>{this.view=v;this.alignSelection();this.review=null;this.pick=null;cx.notify();},t,this.view===v))))
       .child(h_flex().gap(5).children(['source','kind','severity','subject'].map(filterButton)))
+      .when(Boolean(this.producers.length||this.producerSetupError),el=>el.child(div().text_size(10).text_color(this.producerSetupError?t.blocked:t.dim)
+        .child(this.producerSetupError?`Producer: ${this.producerSetupError}`:this.producers.map(item=>{
+          const status=this.producerHealth.get(item.id);
+          return `${item.name}: ${status?.last_run?`last ${fmt(status.last_run)}`:'waiting'}${status?.last_error?` · error: ${status.last_error}`:''}`;
+        }).join('  ·  '))))
       .when(this.search||this.input.value(),el=>el.child(h_flex().h(27).bg(t.background).rounded(5).px(6).child(Input.new(this.input).flex_1().min_w(0).text_size(12).text_color(t.foreground))));
     const latest=this.receipts.find(r=>r.story_id===selected?.story.id);
     const detail=selected&&this.detail?v_flex().px(12).py(10).gap(8).bg(t.background).border_t(1).border_color(t.border)
