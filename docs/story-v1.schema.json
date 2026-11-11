@@ -17,7 +17,7 @@
     "title": {"type": "string", "minLength": 1, "maxLength": 200},
     "summary": {"type": "string", "minLength": 1, "maxLength": 4096},
     "occurred_at": {"type": "string", "format": "date-time"},
-    "severity": {"enum": ["info", "notice", "warning", "critical"]},
+    "severity": {"enum": ["info", "notice", "warning", "critical"], "description": "Choose the lowest level that fits: info is routine FYI requiring nothing (work landed, merged, deployed, or a report finished); notice seeks operator attention without a problem (decision, approval, credential, hands-on step, or PR review); warning means something went wrong or is at risk (blocked work, failed or refused merge, red CI, or a missed target); critical is urgent because something is down or data is at risk."},
     "outcome": {"enum": ["succeeded", "failed", "pending"]},
     "subject": {"type": "object", "additionalProperties": false, "required": ["type", "key"], "properties": {
       "type": {"$ref": "#/$defs/key"}, "key": {"type": "string", "minLength": 1, "maxLength": 256}, "label": {"type": "string", "maxLength": 200}

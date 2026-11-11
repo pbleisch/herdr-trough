@@ -3,8 +3,8 @@ import { v_flex, h_flex, InputState, Input } from 'gpui-base';
 import { exec, watchFolder, theme, home, appHome, props, nextCommand } from 'herdr';
 import { STATES, visible, groups, choices } from './feed.js';
 import { ProducerSchedule } from './producer-schedule.js';
+import { localTime, relativeTime } from './time.js';
 
-const fmt=iso=>{ try { return new Date(iso).toLocaleString(); } catch { return iso; } };
 const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'?t.working:severity==='notice'?t.accent:t.muted;
 
 export default class Trough extends View {
@@ -22,6 +22,7 @@ export default class Trough extends View {
       for (;;) { try { await watchFolder(this.dir); await this.reload(cx); } catch { break; /* timer remains the fallback */ } }
     });
     cx.timer.every(10000,cx=>this.reload(cx));
+    cx.timer.every(15000,cx=>cx.notify());
     this.producers=[]; this.producerHealth=new Map(); this.producerSetupError=null;
     cx.spawn(async cx=>{
       try {
@@ -136,7 +137,7 @@ export default class Trough extends View {
           .on_click((_e,cx)=>{this.sel=s.id;this.detail=true;this.review=null;this.pick=null;this.handle.focus();cx.notify();})
           .child(h_flex().gap(6).items_center().child(div().text_size(10).text_color(palette(s.severity,t)).child(s.severity.toUpperCase()))
             .child(div().flex_1().truncate().font_semibold().text_color(st.read_at?t.muted:t.foreground).child(s.title))
-            .child(div().text_size(10).text_color(t.dim).child(fmt(s.occurred_at))))
+            .child(div().text_size(10).text_color(t.dim).child(relativeTime(s.occurred_at))))
           .child(div().text_size(11).text_color(t.muted).child(`${s.source.label} · ${s.kind}${s.outcome?` · ${s.outcome}`:''}${st.done_at?' · done':''}`))
           .child(div().text_size(11).text_color(t.muted).truncate().child(s.summary)));
       }
@@ -160,14 +161,14 @@ export default class Trough extends View {
       .when(Boolean(this.producers.length||this.producerSetupError),el=>el.child(div().text_size(10).text_color(this.producerSetupError?t.blocked:t.dim)
         .child(this.producerSetupError?`Producer: ${this.producerSetupError}`:this.producers.map(item=>{
           const status=this.producerHealth.get(item.id);
-          return `${item.name}: ${status?.last_run?`last ${fmt(status.last_run)}`:'waiting'}${status?.last_error?` · error: ${status.last_error}`:''}`;
+          return `${item.name}: ${status?.last_run?`last ${relativeTime(status.last_run)}`:'waiting'}${status?.last_error?` · error: ${status.last_error}`:''}`;
         }).join('  ·  '))))
       .when(this.search||this.input.value(),el=>el.child(h_flex().h(27).bg(t.background).rounded(5).px(6).child(Input.new(this.input).flex_1().min_w(0).text_size(12).text_color(t.foreground))));
     const latest=this.receipts.find(r=>r.story_id===selected?.story.id);
     const detail=selected&&this.detail?v_flex().px(12).py(10).gap(8).bg(t.background).border_t(1).border_color(t.border)
       .child(h_flex().justify_between().child(div().font_semibold().text_color(t.foreground).child(selected.story.title))
         .child(this.button('detail-close','×',cx=>{this.detail=false;cx.notify();},t)))
-      .child(div().text_size(11).text_color(t.muted).child(`${selected.story.source.label} · ${fmt(selected.story.occurred_at)} · ${selected.story.id}`))
+      .child(div().text_size(11).text_color(t.muted).child(`${selected.story.source.label} · ${localTime(selected.story.occurred_at)} · ${selected.story.id}`))
       .child(div().text_size(12).text_color(t.foreground).child(selected.story.summary))
       .when(Boolean(selected.story.decision),el=>el.child(div().text_color(t.accent).child(selected.story.decision.prompt)))
       .children((selected.story.links??[]).map(l=>div().text_size(11).text_color(t.muted).child(`${l.label}: ${l.url??l.path}`)))

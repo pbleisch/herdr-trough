@@ -70,12 +70,16 @@ test('backfill publishes plain merge and branch stories once, groups outcomes, a
   assert.equal(first.filter(row=>row.story.kind==='agent').length,1);
   assert.equal(first.find(row=>row.story.kind==='agent').story.title,'The deployment needs approval.');
   assert.equal(first.find(row=>row.story.kind==='agent').story.group_key,'branch:crew');
+  assert.equal(first.find(row=>row.story.kind==='agent').story.severity,'notice');
+  assert.ok(first.filter(row=>row.story.kind==='merge').every(row=>row.story.severity==='info'));
   assert.ok(first.some(row=>row.story.title==='Merged Improve encoder checks in example/repo #8'));
   assert.ok(first.some(row=>row.story.title==='Merged Improve merge handling in example/repo #7'));
   assert.equal(first.filter(row=>row.story.kind==='report').length,1);
   assert.equal(first.filter(row=>row.story.kind==='hands_on').length,1);
   const decision=first.find(row=>row.story.kind==='decision');
   assert.equal(decision.story.decision.options.length,2);
+  assert.equal(decision.story.severity,'notice');
+  assert.equal(first.find(row=>row.story.kind==='hands_on').story.severity,'notice');
   assert.equal(first.filter(row=>row.story.kind==='project').length,0);
   await sync(root,packageOptions);
   assert.equal((await list(root)).length,first.length);
@@ -91,6 +95,41 @@ test('backfill publishes plain merge and branch stories once, groups outcomes, a
     {task:holdId,words:'Proceed with launch',mode:'release'});
   await sync(root,packageOptions);
   assert.ok((await list(root)).some(row=>row.story.title===`Captain hold released: ${holdId}`));
+});
+
+test('Firstmate branch outcomes use structured results before text and classify unstructured summaries',async()=>{
+  const {home,root,packageOptions}=await setup();
+  const cases=[
+    ['landing','Composable features landing. The change is complete.','info'],
+    ['auto','Ready and auto-landing after checks.','info'],
+    ['approval','The deployment needs approval.','notice'],
+    ['review','Pull request ready for review.','notice'],
+    ['blocked','Work is blocked on a failed check.','warning'],
+    ['missed','The check missed its target.','warning'],
+    ['structured-done','This needs approval.', 'info',{status_verb:'done'}],
+    ['structured-failed','The feature landed.', 'warning',{status_verb:'failed'}],
+    ['structured-decision','The feature landed.', 'notice',{outcome_kind:'decision'}]
+  ];
+  await fs.writeFile(path.join(home,'state','branch-outcomes.jsonl'),cases.map(([task,summary,,extra],index)=>
+    JSON.stringify({seq:index+10,epoch:1794416900+index,task,verdict:'captain',summary,silent:false,...extra})).join('\n')+'\n');
+  await sync(root,packageOptions,{backfillSince:'2026-11-01'});
+  const stories=(await list(root)).filter(row=>row.story.kind==='agent');
+  assert.equal(stories.length,cases.length);
+  for(const [task,,severity] of cases) assert.equal(stories.find(row=>row.story.subject.key===task)?.story.severity,severity,task);
+});
+
+test('Firstmate failed and refused merges are warnings',async()=>{
+  const {home,root,packageOptions}=await setup();
+  for(const [index,outcome] of ['failed','refused'].entries()) {
+    const folder=path.join(home,'state','secondmate-prs','closed',`bad-${index}-1794416900`);
+    await fs.mkdir(folder,{recursive:true});
+    await fs.writeFile(path.join(folder,`bad-${index}.meta`),
+      `secondmate=bad-${index}\npr=https://github.com/example/repo/pull/${20+index}\noutcome=${outcome}\nclosed_at=1794416900\n`);
+  }
+  await sync(root,packageOptions,{backfillSince:'2026-11-01'});
+  const failures=(await list(root)).filter(row=>row.story.kind==='merge'&&row.story.outcome==='failed');
+  assert.equal(failures.length,2);
+  assert.ok(failures.every(row=>row.story.severity==='warning'));
 });
 
 test('first sync baselines historical records and later sync publishes only new records',async()=>{

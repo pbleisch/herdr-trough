@@ -8,9 +8,22 @@ const clean=(value,max)=>limited(value,max).replace(/[\u0000-\u0008\u000b\u000c\
 const atDate=value=>/^\d{4}-\d\d-\d\d$/.test(value??'')?`${value}T12:00:00Z`:null;
 const json=value=>Buffer.from(JSON.stringify(value)+'\n');
 const isHold=row=>row?.structured===true&&row?.hold_kind==='captain'&&row?.state!=='done';
-const base=(home,type,identity,occurredAt)=>({v:1,id:storyId(home,type,identity),source:source(home),occurred_at:occurredAt,severity:'notice'});
+const base=(home,type,identity,occurredAt)=>({v:1,id:storyId(home,type,identity),source:source(home),occurred_at:occurredAt,severity:'info'});
 const firstSentence=value=>clean(value,4096).trim().split(/(?<=[.!?])\s|\n/)[0].trim();
 const taskTitle=(rows,task)=>rows.find(row=>row.id===task)?.title?.trim()||'';
+function branchSeverity(row) {
+  const kind=row.outcome_kind??row.outcome?.kind??row.outcome;
+  const verb=row.status_verb??row.status?.verb;
+  const structured=[kind,verb].filter(value=>typeof value==='string').map(value=>value.toLowerCase().replaceAll('_','-'));
+  if(structured.some(value=>/^(blocked|failed|refused|missed|at-risk)$/.test(value))) return 'warning';
+  if(structured.some(value=>/^(decision|approval|credential|install|hands-on|review|waiting|pending)$/.test(value))) return 'notice';
+  if(structured.some(value=>/^(done|landed|merged|finished|completed|auto-landing|succeeded)$/.test(value))) return 'info';
+  const summary=String(row.summary??'').toLowerCase();
+  if(/\b(blocked|blocking|failed|failure|refused|rejected|red ci|missed (?:its |the )?target|at risk|cannot (?:merge|land|proceed))\b/.test(summary)) return 'warning';
+  if(/\b(auto[- ]?land(?:ing)?|landed|landing|merged|finished|completed|complete|deployed|done)\b/.test(summary)) return 'info';
+  if(/\b(waiting|awaiting|decision|approval|approve|credential|install|hands[- ]on|manual step|ready (?:for|to) review|review requested)\b/.test(summary)) return 'notice';
+  return 'notice';
+}
 function prLocation(value) {
   try {
     const url=new URL(value);
@@ -35,7 +48,7 @@ function mergeStory(home,rows,{task,when,url,title,detail,outcome='merged',autho
       (authority==='grant'?' The merge used a standing grant.':'');
   return {...base(home,'merge',identity??(url?url:`${task}:local:${when}`),when),kind:'merge',
     title:clean(`${action} ${heading}${url?` in ${target}`:' locally'}`,200),summary:clean(summary,4096),
-    severity:successful?'notice':'warning',outcome:successful?'succeeded':'failed',group_key:`merge:${task}`,
+    severity:successful?'info':'warning',outcome:successful?'succeeded':'failed',group_key:`merge:${task}`,
     subject:{type:'task',key:clean(task,256)},
     provenance:{task_id:clean(task,128),event_id:clean(identity??(url?url:`${task}:local:${when}`),256)},
     ...(url?{links:[{id:'change',label:'Pull request',url}]}:{})};
@@ -152,7 +165,7 @@ async function branchStories(home,representedTasks) {
   return [...latest.values()].map(row=>({...base(home,'branch',String(row.seq),iso(row.epoch)),kind:'agent',
       title:clean(firstSentence(row.summary)||`Outcome for ${row.task}`,200),
       summary:clean(row.summary,4096)||`Firstmate recorded an outcome for ${row.task}.`,
-      severity:'warning',group_key:`branch:${row.task}`,subject:{type:'task',key:clean(row.task,256)},
+      severity:branchSeverity(row),group_key:`branch:${row.task}`,subject:{type:'task',key:clean(row.task,256)},
       provenance:{task_id:clean(row.task,128),event_id:`branch:${row.seq}`}}));
 }
 
@@ -185,14 +198,14 @@ async function holdStories(home,root,options,rows) {
       summary:routeOptions?
         `Firstmate is holding this ${row.kind==='captain'?'decision':'work item'} for the captain. Review a configured option to answer.`:
         `Firstmate is holding this ${row.kind==='captain'?'decision':'work item'} for the captain. Answer through Firstmate; no exact option route is configured.`,
-      severity:'warning',outcome:'pending',group_key:`decision:${row.id}`,subject:{type:'task',key:clean(row.id,256)},
+      severity:'notice',outcome:'pending',group_key:`decision:${row.id}`,subject:{type:'task',key:clean(row.id,256)},
       provenance:{task_id:clean(row.id,128),event_id:event},decision};
     if(routeOptions) story.actions=[{id:'answer',label:'Answer in Firstmate',handler:'answer_firstmate_decision',choice:true,args:{task_id:row.id,hold_identity:identity}}];
     stories.push({story,routeOptions});
     const category=options.task_categories?.[row.id]??(['credential','hands_on'].includes(row.kind)?row.kind:null);
     if(['credential','hands_on'].includes(category)) stories.push({story:{...base(home,category,event,date),kind:category,
       title:clean(row.title||`Hands-on step: ${row.id}`,200),summary:'Captain action is required for this Firstmate hold. Inspect the hold in Firstmate; no secret value is copied to this card.',
-      severity:'warning',outcome:'pending',group_key:`decision:${row.id}`,subject:{type:'task',key:clean(row.id,256)},
+      severity:'notice',outcome:'pending',group_key:`decision:${row.id}`,subject:{type:'task',key:clean(row.id,256)},
       provenance:{task_id:clean(row.id,128),event_id:event}}});
   }
   return {stories,current};
