@@ -94,20 +94,21 @@ export function validateStory(s, filename) {
   for (const [i,l] of links.entries()) { object(l,`links[${i}]`,['id','label'],['id','label','url','path']); key(l.id,`links[${i}].id`); string(l.label,`links[${i}].label`,1,120); if (own(l,'url') === own(l,'path')) fail(`links[${i}]`,'expected exactly one destination'); if (own(l,'url')) url(l.url,`links[${i}].url`); else localPath(l.path,`links[${i}].path`); } unique(links,'links');
   const actions = s.actions ?? []; if (!Array.isArray(actions) || actions.length > 8) fail('actions','expected at most 8 actions');
   for (const [i,a] of actions.entries()) {
-    object(a,`actions[${i}]`,['id','label','handler'],['id','label','handler','args']); key(a.id,`actions[${i}].id`); string(a.label,`actions[${i}].label`,1,120); key(a.handler,`actions[${i}].handler`);
+    object(a,`actions[${i}]`,['id','label','handler'],['id','label','handler','args','choice']); key(a.id,`actions[${i}].id`); string(a.label,`actions[${i}].label`,1,120); key(a.handler,`actions[${i}].handler`);
+    if(own(a,'choice') && typeof a.choice!=='boolean') fail(`actions[${i}].choice`,'expected boolean');
     if (own(a,'args')) { if (!a.args || typeof a.args !== 'object' || Array.isArray(a.args) || Object.keys(a.args).length > 12) fail(`actions[${i}].args`,'expected bounded object'); for (const [k,v] of Object.entries(a.args)) { key(k,`actions[${i}].args key`); if (typeof v === 'string') string(v,`actions[${i}].args.${k}`,0,8192); else if (typeof v !== 'boolean' && !(typeof v === 'number' && Number.isFinite(v))) fail(`actions[${i}].args.${k}`,'expected string, number or boolean'); } }
     if (['open_url','open_path','add_to_reading_list'].includes(a.handler)) {
       const link=links.find(l=>l.id===a.args?.link);
       if(!link) fail(`actions[${i}].args.link`,'must reference a declared link');
       if(a.handler==='open_url'&&!link.url || a.handler==='open_path'&&!link.path) fail(`actions[${i}].args.link`,'wrong link destination type');
     }
-    if(a.handler==='answer_decision'&&s.kind!=='decision') fail(`actions[${i}].handler`,'answer_decision requires decision kind');
+    if((a.handler==='answer_decision'||a.choice)&&s.kind!=='decision') fail(`actions[${i}]`,'choice action requires decision kind');
   } unique(actions,'actions');
   if (s.kind === 'decision') {
     if (!own(s,'decision')) fail('decision','required for decision');
-    if (!actions.some(a => a.handler === 'answer_decision')) fail('actions','decision needs answer_decision handler');
+    if (actions.some(a => a.handler === 'answer_decision'||a.choice) && (!Array.isArray(s.decision?.options)||s.decision.options.length<2)) fail('decision.options','choice action needs at least two options');
   } else if (own(s,'decision')) fail('decision','only valid for decision kind');
-  if (own(s,'decision')) { const d=s.decision; object(d,'decision',['question_id','prompt','options'],['question_id','prompt','options','allow_comment']); key(d.question_id,'decision.question_id'); string(d.prompt,'decision.prompt',1,4096); if (!Array.isArray(d.options) || d.options.length<2 || d.options.length>10) fail('decision.options','expected 2-10 options'); for (const [i,o] of d.options.entries()) { object(o,`decision.options[${i}]`,['id','label','answer_text'],['id','label','answer_text']); key(o.id,`decision.options[${i}].id`); string(o.label,`decision.options[${i}].label`,1,120); string(o.answer_text,`decision.options[${i}].answer_text`,1,512); } unique(d.options,'decision.options'); if (own(d,'allow_comment') && typeof d.allow_comment !== 'boolean') fail('decision.allow_comment','expected boolean'); }
+  if (own(s,'decision')) { const d=s.decision; object(d,'decision',['question_id','prompt','options'],['question_id','prompt','options','allow_comment']); key(d.question_id,'decision.question_id'); string(d.prompt,'decision.prompt',1,4096); if (!Array.isArray(d.options) || d.options.length>10) fail('decision.options','expected 0-10 options'); for (const [i,o] of d.options.entries()) { object(o,`decision.options[${i}]`,['id','label','answer_text'],['id','label','answer_text']); key(o.id,`decision.options[${i}].id`); string(o.label,`decision.options[${i}].label`,1,120); string(o.answer_text,`decision.options[${i}].answer_text`,1,512); } unique(d.options,'decision.options'); if (own(d,'allow_comment') && typeof d.allow_comment !== 'boolean') fail('decision.allow_comment','expected boolean'); }
   if (own(s,'extensions')) { if (!s.extensions || typeof s.extensions !== 'object' || Array.isArray(s.extensions) || Object.keys(s.extensions).length>16) fail('extensions','expected bounded object'); for (const k of Object.keys(s.extensions)) if (!NS.test(k)) fail(`extensions.${k}`,'expected namespaced key'); }
   return s;
 }

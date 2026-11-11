@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { rootDir } from '../../../mods/trough/core/store.js';
+import { sync } from '../sync.js';
+
+const packagePath=path.resolve(fileURLToPath(new URL('../index.js',import.meta.url)));
+const usage='usage: trough-firstmate sync [--dir TROUGH_DIR] [--home FIRSTMATE_HOME] [--interval-seconds N]';
+
+async function main() {
+  const argv=process.argv.slice(2),command=argv.shift();
+  if(command==='help'||command==='--help'||!command) { process.stdout.write(usage+'\n'); return; }
+  if(command!=='sync') throw new Error(usage);
+  const flags={};
+  while(argv.length) {
+    const flag=argv.shift();
+    if(!['--dir','--home','--interval-seconds'].includes(flag)||!argv.length||flags[flag]) throw new Error(usage);
+    flags[flag]=argv.shift();
+  }
+  const root=rootDir(flags['--dir']);
+  let options={};
+  try {
+    const config=JSON.parse(await fs.readFile(path.join(root,'handlers.json'),'utf8'));
+    const entry=config.packages?.find(item=>typeof item==='object'&&path.resolve(item.path??'')===packagePath);
+    if(entry) options=entry.options??{};
+  } catch(error) { if(error.code!=='ENOENT') throw error; }
+  if(flags['--home']) options={...options,home:flags['--home']};
+  const interval=flags['--interval-seconds'];
+  if(interval!==undefined&&(!/^\d+$/.test(interval)||Number(interval)<1)) throw new Error('--interval-seconds requires a positive integer');
+  do {
+    process.stdout.write(JSON.stringify(await sync(root,options))+'\n');
+    if(interval===undefined) break;
+    await new Promise(resolve=>setTimeout(resolve,Number(interval)*1000));
+  } while(true);
+}
+
+main().catch(error=>{ process.stderr.write(`trough-firstmate: ${error.message}\n`); process.exitCode=1; });

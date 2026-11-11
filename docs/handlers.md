@@ -32,6 +32,16 @@ Built-in arguments:
 
 For a decision story, put `"answer_routes":{"<story-id>":{"source_id":"<source-id>","story_hash":"<sha256-from-trough-show>"}}` in `handlers.json`. This binding is outside the story and pins the exact bytes. A decision without it is view-only. The operator selects an option in the pane; CLI review uses `--option OPTION_ID` and optionally `--comment TEXT` if the story allows comments. Answers remain pending until the source consumes them. The source may move a captured answer into its `handled/` subdirectory; this does not imply the requested outcome was applied. A second answer for the same question is refused by Trough.
 
-An optional integration package is an absolute path in `packages`. It exports `handlers()` returning an object keyed by handler ID. Each descriptor has `args` (the same typed schema), `effects` (declared effect classes), `plan({story,action,args,root,choice})`, and `run({root,reviewed,choice})`. `plan` must return a serializable object with an `effects` string array spelling out the exact targets and changes. Trough stores that plan with the review token and compares it with a fresh plan before calling `run`. Packages are loaded only if listed in operator configuration. A future Firstmate package can supply `deliver_prompt` and its own bound decision route through this interface; the standalone core imports no Firstmate code.
+An optional integration package is an absolute path in `packages`.
+An entry can be a path string, or `{"path":"/absolute/package/index.js","options":{"home":"/absolute/firstmate-home"}}` when the package needs trusted operator configuration.
+It exports `handlers(options)` returning an object keyed by handler ID.
+Each descriptor has `args` (the same typed schema), `effects` (declared effect classes), `plan({story,action,args,root,choice})`, and `run({root,reviewed,choice,token})`.
+`plan` must return a serializable object with an `effects` string array spelling out the exact targets and changes.
+Trough stores that plan with the review token and compares it with a fresh plan before calling `run`.
+Packages are loaded only if listed in operator configuration.
+The standalone core imports no Firstmate code.
+
+Decision stories may be view-only, with an empty `decision.options` array and no answer action.
+A package answer action uses `"choice":true` so the pane asks the operator to select one of the story's options before review.
 
 Every successful review creates `reviews/<token>.json` with the story hash, chosen args, and exact plan. The token expires after five minutes. `run` claims `receipts/<token>.json` before the effect, and replaces it with the outcome afterward. An existing receipt prevents another execution. A `pending` receipt after a crash represents an uncertain effect and needs operator review outside Trough; Trough never retries it automatically.

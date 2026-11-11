@@ -36,7 +36,7 @@
     "actions": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/action"}},
     "decision": {"type": "object", "additionalProperties": false, "required": ["question_id", "prompt", "options"], "properties": {
       "question_id": {"$ref": "#/$defs/key"}, "prompt": {"type": "string", "minLength": 1, "maxLength": 4096},
-      "options": {"type": "array", "minItems": 2, "maxItems": 10, "items": {"type": "object", "additionalProperties": false,
+      "options": {"type": "array", "maxItems": 10, "items": {"type": "object", "additionalProperties": false,
         "required": ["id", "label", "answer_text"], "properties": {"id": {"$ref": "#/$defs/key"},
           "label": {"type": "string", "minLength": 1, "maxLength": 120}, "answer_text": {"type": "string", "minLength": 1, "maxLength": 512}}}},
       "allow_comment": {"type": "boolean"}
@@ -44,8 +44,13 @@
     "extensions": {"type": "object", "maxProperties": 16, "patternProperties": {"^[a-z0-9]+(?:[.-][a-z0-9]+)+$": {}}, "additionalProperties": false}
   },
   "allOf": [{"if": {"properties": {"kind": {"const": "decision"}}, "required": ["kind"]},
-    "then": {"required": ["decision", "actions"], "properties": {"actions": {"contains": {"properties": {"handler": {"const": "answer_decision"}}, "required": ["handler"]}}}},
-    "else": {"not": {"required": ["decision"]}}}],
+    "then": {"required": ["decision"]},
+    "else": {"not": {"required": ["decision"]}}},
+    {"if": {"properties": {"actions": {"contains": {"anyOf": [
+      {"properties": {"handler": {"const": "answer_decision"}}, "required": ["handler"]},
+      {"properties": {"choice": {"const": true}}, "required": ["choice"]}
+    ]}}}, "required": ["actions"]},
+    "then": {"properties": {"decision": {"properties": {"options": {"minItems": 2}}}}}}],
   "$defs": {
     "id": {"type": "string", "oneOf": [{"pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"}, {"pattern": "^[0-9a-f]{32}$"}]},
     "key": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
@@ -58,7 +63,7 @@
       "path": {"type": "string", "minLength": 1, "maxLength": 4096}}},
     "action": {"type": "object", "additionalProperties": false, "required": ["id", "label", "handler"], "properties": {
       "id": {"$ref": "#/$defs/key"}, "label": {"type": "string", "minLength": 1, "maxLength": 120},
-      "handler": {"$ref": "#/$defs/key"},
+      "handler": {"$ref": "#/$defs/key"}, "choice": {"type": "boolean"},
       "args": {"type": "object", "maxProperties": 12, "patternProperties": {"^[a-z][a-z0-9_-]{0,63}$": {
         "oneOf": [{"type": "string", "maxLength": 8192}, {"type": "number"}, {"type": "boolean"}]}}, "additionalProperties": false}
     }}

@@ -22,10 +22,54 @@ The data directory contains `inbox/`, immutable `store/`, per-story `state/`, `r
 
 Stories may declare `actions` with an `id`, `label`, installed `handler` ID, and typed `args`. They cannot declare a command or executable. Built-ins are `open_url`, `open_path` (Finder reveal only), `add_to_reading_list` (requires `rl` on `PATH`), and `answer_decision`. The last one requires an operator-installed route bound to the exact story hash. See [handler configuration](docs/handlers.md).
 
-Clicking an action opens a review sheet that shows the source claim and exact effects. A separate **Confirm action** click executes it and writes a receipt. CLI callers use `trough review STORY ACTION`, inspect its output, then `trough run REVIEW_TOKEN`. The run checks the story and handler again; a token can run only once. A failed or uncertain action remains visible in `receipts/` and is not retried automatically. Actions never answer a native agent or terminal question. Prompt delivery and the optional Firstmate integration are future packages, not part of this core.
+Clicking an action opens a review sheet that shows the source claim and exact effects. A separate **Confirm action** click executes it and writes a receipt. CLI callers use `trough review STORY ACTION`, inspect its output, then `trough run REVIEW_TOKEN`. The run checks the story and handler again; a token can run only once. A failed or uncertain action remains visible in `receipts/` and is not retried automatically. Actions never answer a native agent or terminal question. The optional Firstmate package below sends asynchronous steering to a task inbox and answers Firstmate captain holds through Firstmate's own decision command.
 
 The pane supports `j`/`k` and arrows, `g`/`G`, `/` search, `f` view filters, `r` read, `d` done, `z` one-hour snooze, Enter detail, and `a` action review. Source, kind, severity, and subject filters are also available in the header. Stored stories and state reload on folder changes and a periodic fallback, including changes from another pane copy.
 
 ## Develop
 
 Run `npm test` and `herdr-app check mods/trough`. Both use local files. No remote operation or Herdr lifecycle action is part of the test suite.
+
+## Optional Firstmate integration
+
+The core and pane run without Firstmate.
+To enable the package, add it to the operator's `$TROUGH_DIR/handlers.json` with the absolute path to this repository's `packages/firstmate/index.js` and an absolute Firstmate home path:
+
+```json
+{
+  "v": 1,
+  "packages": [{
+    "path": "/absolute/path/to/herdr-trough/packages/firstmate/index.js",
+    "options": {
+      "home": "/absolute/path/to/firstmate",
+      "decisions": {
+        "held-task-id": {
+          "options": [
+            {"id": "proceed", "label": "Proceed", "answer_text": "Proceed with the work", "mode": "release"},
+            {"id": "stop", "label": "Stop", "answer_text": "Stop this work", "mode": "done"}
+          ]
+        }
+      },
+      "task_categories": {"credential-task-id": "credential"}
+    }
+  }]
+}
+```
+
+Configure exact decision words and `done` or `release` consequences before the first sync for a hold.
+Holds without configured options are view-only decision cards because Firstmate's hold record does not encode answer choices.
+`task_categories` can mark a held task as `credential` or `hands_on` for a separate attention card without copying any secret value into a story.
+
+Run `packages/firstmate/bin/trough-firstmate sync --dir "$TROUGH_DIR"` to publish changes.
+The command also accepts `--home` for an explicit home and `--interval-seconds N` for a persistent producer, or a scheduler can invoke a single sync repeatedly.
+It reads the local backlog snapshot, branch outcomes, merge records, and project registry without changing Firstmate tracked files.
+The optional Firstmate `config/fleet-ledger` flag adds merge and status history to the feed when enabled by the operator.
+The first sync establishes a project registry baseline; later additions and removals create project stories.
+Finished report cards link the report file and offer the built-in reading-list action.
+Policy anomalies require a structured Firstmate record and are covered in [the draft proposals](docs/firstmate-proposals.md).
+
+`deliver_prompt` actions name a local Firstmate task ID, its `spawn_gen`, and exact text.
+Review rechecks the live task, and run checks it again before calling `fm-send.sh` with `FM_HOME` and the expected generation explicitly set.
+The handler rejects leading `/` or `$`, parked tasks, replaced tasks, and remote second mates; a local second mate uses `--fire-and-forget` to avoid creating a reply expectation.
+Delivery is asynchronous, and a later sync reports when the exact inbox record reaches `handled/`.
+`answer_firstmate_decision` calls `fm-captain-hold.sh answer` with a decision file containing the selected words and uses `--release` for configured release options.

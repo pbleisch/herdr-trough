@@ -78,7 +78,7 @@ export default class Trough extends View {
     else if(k==='r') this.act(this.selected()?.state.read_at?'unread':'read',cx);
     else if(k==='d') this.act(this.selected()?.state.done_at?'undo':'done',cx);
     else if(k==='z') this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]);
-    else if(k==='a') {const action=this.selected()?.story.actions?.[0];if(action){this.detail=true;if(action.handler==='answer_decision'){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
+    else if(k==='a') {const action=this.selected()?.story.actions?.[0];if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
   }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
   render(cx) {
@@ -118,7 +118,7 @@ export default class Trough extends View {
       .when(Boolean(latest),el=>el.child(div().text_size(11).text_color(latest.outcome==='failed'?t.blocked:t.muted).child(`Last action: ${latest.outcome}${latest.result?` · ${latest.result}`:''}`)))
       .when(Boolean(selected.story.actions?.length),el=>el.child(h_flex().gap(5).children(selected.story.actions.map(a=>this.button(`action-${a.id}`,a.label,cx=>{
         this.review=null;
-        if(a.handler==='answer_decision'){this.pick=a;cx.notify();} else this.actionReview(a,cx);
+        if(a.handler==='answer_decision'||a.choice){this.pick=a;cx.notify();} else this.actionReview(a,cx);
       },t)))))
       .when(Boolean(this.pick&&selected.story.decision),el=>el.child(v_flex().gap(4)
         .child(div().text_color(t.muted).child('Choose an answer to review:'))

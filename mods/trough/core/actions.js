@@ -70,11 +70,14 @@ async function loadConfig(root) {
 }
 async function registry(root) {
   const config=await loadConfig(root), packages={};
-  for(const file of config.packages) {
+  for(const entry of config.packages) {
+    const file=typeof entry==='string'?entry:entry?.path;
+    const options=typeof entry==='string'?{}:entry?.options??{};
     if(typeof file!=='string'||!path.isAbsolute(file)) fail('package path must be absolute');
+    if(!plain(options)) fail('package options must be an object');
     const module=await import(pathToFileURL(file).href);
     if(typeof module.handlers!=='function') fail(`package ${file} must export handlers()`);
-    const entries=await module.handlers();
+    const entries=await module.handlers(options);
     if(!plain(entries)) fail(`package ${file} returned no handlers`);
     Object.assign(packages,entries);
   }
@@ -149,7 +152,7 @@ export async function runReviewed(root,token) {
   try {
     if(fresh.plan.kind==='answer') result=await executeAnswer(root,token,fresh);
     else if(fresh.plan.kind==='package') {
-      const {packages}=await registry(root); result=await packages[fresh.handler].run({root,reviewed:fresh,choice:record.choice});
+      const {packages}=await registry(root); result=await packages[fresh.handler].run({root,reviewed:fresh,choice:record.choice,token});
     } else {
       const r=spawnSync(fresh.plan.command,fresh.plan.argv,{encoding:'utf8',shell:false,timeout:30000,maxBuffer:65536});
       if(r.error) throw r.error;

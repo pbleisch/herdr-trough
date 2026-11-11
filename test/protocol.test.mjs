@@ -50,7 +50,8 @@ test('schema excludes hidden behavior and checks decision and link references',(
   assert.throws(()=>validateStory({...s,command:'/bin/sh'}),/unknown field/);
   assert.throws(()=>validateStory({...s,occurred_at:'2026-02-30T00:00:00Z'}),/calendar date/);
   assert.throws(()=>parseJson(Buffer.from('{"a":1,"a":2}')),/duplicate JSON key/);
-  assert.throws(()=>validateStory({...s,kind:'decision',decision:{question_id:'q',prompt:'Choose',options:[{id:'a',label:'A',answer_text:'A'},{id:'b',label:'B',answer_text:'B'}]}}),/answer_decision/);
+  assert.doesNotThrow(()=>validateStory({...s,kind:'decision',decision:{question_id:'q',prompt:'Choose',options:[]}}));
+  assert.throws(()=>validateStory({...s,kind:'decision',decision:{question_id:'q',prompt:'Choose',options:[]},actions:[{id:'answer',label:'Answer',handler:'custom',choice:true}]}),/at least two options/);
   assert.throws(()=>validateStory({...s,actions:[{id:'open',label:'Open',handler:'open_url',args:{link:'missing'}}]}),/declared link/);
 });
 
