@@ -9,12 +9,21 @@ test('group identity includes source and kind, and unread state remains per stor
   assert.equal(grouped.length,2);
   assert.equal(grouped[0].items.length,2);
   assert.equal(grouped[0].severity,'warning');
-  assert.deepEqual(visible([a,b,c],{view:'unread'}).map(r=>r.story.id),['a','c']);
+  assert.deepEqual(visible([a,b,c],{states:['unread']}).map(r=>r.story.id),['a','c']);
 });
-test('search and filters respect done and snoozed states',()=>{
-  const future=new Date(Date.now()+3600000).toISOString();
-  const rows=[row('one',{title:'Build done',kind:'ci'}, {done_at:'2026-11-11T18:01:00Z'}),row('two',{title:'Build failed',kind:'ci',actions:[{id:'open'}]}),row('three',{title:'Monitor',kind:'health'}, {snoozed_until:future})];
-  assert.deepEqual(visible(rows,{view:'needs action',kind:'ci'}).map(r=>r.story.id),['two']);
-  assert.deepEqual(visible(rows,{view:'done',text:'build'}).map(r=>r.story.id),['one']);
-  assert.deepEqual(visible(rows,{view:'snoozed'}).map(r=>r.story.id),['three']);
+test('state predicates AND with each other and dimensions; selected values within a dimension OR',()=>{
+  const now=Date.parse('2026-11-11T18:00:00Z'),future='2026-11-12T18:00:00Z';
+  const rows=[
+    row('one',{title:'Build done',kind:'ci',actions:[{id:'open'}]}, {done_at:'2026-11-11T18:01:00Z'}),
+    row('two',{title:'Build failed',kind:'ci',actions:[{id:'open'}],subject:{key:'build',label:'Build'}}),
+    row('three',{title:'Build warning',kind:'ci',source:{id:'monitor',label:'Monitor'},severity:'warning',actions:[{id:'open'}],subject:{key:'build',label:'Build'}}, {snoozed_until:future}),
+    row('four',{title:'Monitor',kind:'health'}, {snoozed_until:future}),
+    row('five',{title:'Build read',kind:'ci',actions:[{id:'open'}]}, {read_at:'2026-11-11T18:01:00Z'})
+  ];
+  assert.deepEqual(visible(rows,{},now).map(r=>r.story.id),['two','five']);
+  assert.deepEqual(visible(rows,{all:true},now).map(r=>r.story.id),['one','two','three','four','five']);
+  assert.deepEqual(visible(rows,{states:['unread','needs action'],source:['agent','monitor'],kind:['ci'],subject:['build'],text:'build'},now).map(r=>r.story.id),['two','three']);
+  assert.deepEqual(visible(rows,{states:['snoozed','unread'],source:['monitor'],severity:['warning']},now).map(r=>r.story.id),['three']);
+  assert.deepEqual(visible(rows,{states:['done','needs action']},now),[]);
+  assert.deepEqual(visible(rows,{states:['done'],text:'build'},now).map(r=>r.story.id),['one']);
 });

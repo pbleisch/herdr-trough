@@ -5,24 +5,26 @@ import { rootDir, post, ingest, stored, setState, list, rejections } from '../co
 import { parseJson, validateStory } from '../core/schema.js';
 import { review, runReviewed, receipts } from '../core/actions.js';
 import { listProducers, runProducer } from '../core/producers.js';
+import { visible } from '../feed.js';
 
-const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | ls [--json] [--unread|--done|--all] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN | receipts [STORY] | producers | produce ID\nGlobal: --dir DIR (or TROUGH_DIR)`;
+const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | ls [--json] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN | receipts [STORY] | producers | produce ID\nGlobal: --dir DIR (or TROUGH_DIR). ls state flags AND together; repeated values for one field OR together; dimensions AND together. Without state flags, ls shows active unfinished stories; --all includes every state.`;
 function parse(argv) {
   const positional=[],opts={};
   for (let i=0;i<argv.length;i++) {
     const x=argv[i];
     if (!x.startsWith('--')) { positional.push(x); continue; }
     const k=x.slice(2);
-    if (['json','unread','done','all'].includes(k)) { opts[k]=true; continue; }
-    if (!['dir','file','source','kind','title','summary','severity','group-key','link','until','option','comment'].includes(k) || i+1>=argv.length) throw new Error(`unknown or incomplete option: ${x}`);
+    if (['json','unread','needs-action','done','snoozed','all'].includes(k)) { opts[k]=true; continue; }
+    if (!['dir','file','source','kind','title','summary','severity','subject','search','group-key','link','until','option','comment'].includes(k) || i+1>=argv.length) throw new Error(`unknown or incomplete option: ${x}`);
     if (k==='link') (opts.link??=[]).push(argv[++i]);
+    else if (['source','kind','severity','subject'].includes(k) && positional[0]==='ls') (opts[k]??=[]).push(argv[++i]);
     else { if (opts[k]!==undefined) throw new Error(`duplicate option: ${x}`); opts[k]=argv[++i]; }
   }
   return {positional,opts};
 }
 const output = value => process.stdout.write(typeof value==='string' ? value+'\n' : JSON.stringify(value,null,2)+'\n');
 async function bytesFrom(file) { if (!file) throw new Error('--file is required'); return file==='-' ? new Promise((resolve,reject)=>{ const chunks=[]; process.stdin.on('data',c=>chunks.push(c)); process.stdin.on('end',()=>resolve(Buffer.concat(chunks))); process.stdin.on('error',reject); }) : fs.readFile(file); }
-function matches(row,opts) { const s=row.state; return opts.all || (opts.unread ? !s.read_at && !s.done_at : opts.done ? Boolean(s.done_at) : !s.done_at && !(s.snoozed_until && Date.parse(s.snoozed_until)>Date.now())); }
+function lsFilters(opts) { return {all:opts.all,states:[['unread','unread'],['needs-action','needs action'],['done','done'],['snoozed','snoozed']].filter(([flag])=>opts[flag]).map(([,state])=>state),source:opts.source,kind:opts.kind,severity:opts.severity,subject:opts.subject,text:opts.search}; }
 async function main() {
   const {positional,opts}=parse(process.argv.slice(2)); const [command,id,...rest]=positional; const root=rootDir(opts.dir);
   if (!command || command==='help') { output(usage); return; }
@@ -42,7 +44,7 @@ async function main() {
   if (command==='review') { if (!id||rest.length!==1) throw new Error('review needs STORY and ACTION'); output(await review(root,id,rest[0],{option:opts.option,comment:opts.comment})); return; }
   if (command==='run') { if (!id||rest.length) throw new Error('run needs a review token'); output(await runReviewed(root,id)); return; }
   if (command==='receipts') { if(rest.length) throw new Error('receipts accepts at most one story ID'); output(await receipts(root,id)); return; }
-  if (command==='ls') { const rows=(await list(root)).filter(r=>matches(r,opts)); if (opts.json) output(rows); else for (const r of rows) output(`${r.story.id}\t${r.story.severity}\t${r.story.source.label}\t${r.story.title}`); return; }
+  if (command==='ls') { const rows=visible(await list(root),lsFilters(opts)); if (opts.json) output(rows); else for (const r of rows) output(`${r.story.id}\t${r.story.severity}\t${r.story.source.label}\t${r.story.title}`); return; }
   if (command==='show') { if (!id) throw new Error('story ID required'); await ingest(root); const row=await stored(root,id); output({story:row.story,story_hash:row.hash,received_at:row.received_at}); return; }
   if (['read','unread','done','undo','snooze'].includes(command)) { if (!id) throw new Error('story ID required'); output(await setState(root,id,command,opts.until)); return; }
   throw new Error(`unknown command: ${command}\n${usage}`);

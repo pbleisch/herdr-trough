@@ -1,19 +1,20 @@
-export const VIEWS=['all','unread','needs action','done','snoozed'];
+export const STATES=['unread','needs action','done','snoozed'];
 const active=(r,now)=>!r.state.snoozed_until || Date.parse(r.state.snoozed_until)<=now;
 export function visible(rows,filters,now=Date.now()) {
   const q=(filters.text??'').toLowerCase();
+  const states=filters.states??[];
   return rows.filter(r=>{
     const s=r.story,st=r.state;
-    if (filters.view==='unread' && (st.read_at||st.done_at||!active(r,now))) return false;
-    if (filters.view==='needs action' && (!s.actions?.length||st.done_at||!active(r,now))) return false;
-    if (filters.view==='done' && !st.done_at) return false;
-    if (filters.view==='snoozed' && active(r,now)) return false;
-    if (filters.view==='all' && (st.done_at||!active(r,now))) return false;
-    for (const field of ['source','kind','severity']) {
-      const value=field==='source'?s.source.id:s[field];
-      if (filters[field] && value!==filters[field]) return false;
+    if (!states.length && !filters.all && (st.done_at||!active(r,now))) return false;
+    if (states.includes('unread') && st.read_at) return false;
+    if (states.includes('needs action') && (!s.actions?.length||st.done_at)) return false;
+    if (states.includes('done') && !st.done_at) return false;
+    if (states.includes('snoozed') && active(r,now)) return false;
+    for (const field of ['source','kind','severity','subject']) {
+      const value=field==='source'?s.source.id:field==='subject'?s.subject?.key:s[field];
+      const selected=filters[field];
+      if (selected && (Array.isArray(selected)?selected.length&&!selected.includes(value):value!==selected)) return false;
     }
-    if (filters.subject && s.subject?.key!==filters.subject) return false;
     if (q && ![s.title,s.summary,s.source.label,s.kind,s.subject?.label,s.subject?.key,s.severity].some(x=>x?.toLowerCase().includes(q))) return false;
     return true;
   });

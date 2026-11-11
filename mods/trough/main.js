@@ -1,27 +1,22 @@
 import { View, div } from 'gpui-kit';
 import { v_flex, h_flex, InputState, Input } from 'gpui-base';
 import { exec, watchFolder, theme, home, appHome, props, nextCommand } from 'herdr';
-import { VIEWS, visible, groups, choices } from './feed.js';
+import { STATES, visible, groups, choices } from './feed.js';
 import { ProducerSchedule } from './producer-schedule.js';
 
 const fmt=iso=>{ try { return new Date(iso).toLocaleString(); } catch { return iso; } };
-const cycle=(all,current)=>all[(all.indexOf(current)+1)%all.length];
 const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'?t.working:severity==='notice'?t.accent:t.muted;
 
 export default class Trough extends View {
   init(_props,cx) {
     this.dir=props()?.dir || `${home()}/.local/state/trough`;
     this.cli=`${appHome()}/mods/trough/bin/trough`;
-    this.handle=cx.focus_handle(); this.rows=[]; this.rejected=0; this.sel=null; this.view='all'; this.filter={source:null,kind:null,severity:null,subject:null};
+    this.handle=cx.focus_handle(); this.rows=[]; this.rejected=0; this.sel=null; this.filter={states:[],source:[],kind:[],severity:[],subject:[]}; this.filterPicker=false; this.filterField='source';
     this.detail=false; this.search=false; this.typing=false; this.error=null; this.pick=null; this.review=null; this.receipts=[];
-    this.input=InputState.new({placeholder:'Search stories'});
+    this.resetSearchInput(cx);
     this.commentInput=InputState.new({placeholder:'Optional comment'});
     this.commentInput.on('focus',(_e,cx)=>{this.commentTyping=true;cx.notify();});
     this.commentInput.on('blur',(_e,cx)=>{this.commentTyping=false;cx.notify();});
-    this.input.on('change',(_e,cx)=>{this.alignSelection();this.review=null;this.pick=null;cx.notify();});
-    this.input.on('submit',(_e,cx)=>{this.handle.focus();cx.notify();});
-    this.input.on('focus',(_e,cx)=>{this.typing=true;cx.notify();});
-    this.input.on('blur',(_e,cx)=>{this.typing=false;cx.notify();});
     cx.spawn(async cx=>{
       await this.reload(cx);
       for (;;) { try { await watchFolder(this.dir); await this.reload(cx); } catch { break; /* timer remains the fallback */ } }
@@ -41,6 +36,13 @@ export default class Trough extends View {
     cx.spawn(async cx=>{for (;;) { const cmd=await nextCommand(); if(cmd==='focus') this.handle.focus(); cx.notify(); }});
   }
   async call(args) { const r=await exec('node',[this.cli,'--dir',this.dir,...args],{timeout:args[0]==='produce'?120000:30000}); if(r.code!==0) throw new Error(r.stderr.trim()||`trough exited ${r.code}`); return r.stdout; }
+  resetSearchInput(cx) {
+    this.input=InputState.new({placeholder:'Search stories'});
+    this.input.on('change',(_e,cx)=>{this.alignSelection();this.review=null;this.pick=null;cx.notify();});
+    this.input.on('submit',(_e,cx)=>{this.handle.focus();cx.notify();});
+    this.input.on('focus',(_e,cx)=>{this.typing=true;cx.notify();});
+    this.input.on('blur',(_e,cx)=>{this.typing=false;cx.notify();});
+  }
   pollProducers(cx) {
     for(const item of this.producerSchedule?.due(Date.now())??[]) {
       cx.spawn(async cx=>{
@@ -84,7 +86,22 @@ export default class Trough extends View {
       finally {this.running=false;cx.notify();}
     });
   }
-  filtered() { return visible(this.rows,{...this.filter,view:this.view,text:this.input.value()}); }
+  filtered() { return visible(this.rows,{...this.filter,text:this.input.value()}); }
+  changeFilter(field,value,cx) {
+    const selected=this.filter[field];
+    this.filter[field]=selected.includes(value)?selected.filter(item=>item!==value):[...selected,value];
+    this.alignSelection();this.review=null;this.pick=null;cx.notify();
+  }
+  clearFilters(cx) {
+    for(const field of ['states','source','kind','severity','subject']) this.filter[field]=[];
+    this.resetSearchInput(cx);this.search=false;this.typing=false;this.alignSelection();this.review=null;this.pick=null;cx.notify();
+  }
+  filterSummary() {
+    const parts=[...this.filter.states];
+    for(const field of ['source','kind','severity','subject']) if(this.filter[field].length) parts.push(`${field}: ${this.filter[field].join(', ')}`);
+    if(this.input.value()) parts.push(`search: ${this.input.value()}`);
+    return parts.join(' · ')||'current';
+  }
   alignSelection() { const shown=this.filtered(); if(!shown.some(r=>r.story.id===this.sel)) this.sel=shown[0]?.story.id??null; }
   selected() { return this.filtered().find(r=>r.story.id===this.sel); }
   move(delta,cx) { const rows=this.filtered(); if(!rows.length) return; const index=rows.findIndex(r=>r.story.id===this.sel); this.sel=rows[Math.max(0,Math.min(rows.length-1,index+delta))].story.id; cx.notify(); }
@@ -96,9 +113,11 @@ export default class Trough extends View {
     else if(k==='g'||k==='home') {this.sel=this.filtered()[0]?.story.id??null;cx.notify();}
     else if(k==='shift-g'||k==='end') {this.sel=this.filtered().at(-1)?.story.id??null;cx.notify();}
     else if(k==='/') {this.search=true;this.input.focus();cx.notify();}
-    else if(k==='f') {this.view=cycle(VIEWS,this.view);this.alignSelection();this.review=null;this.pick=null;cx.notify();}
+    else if(k==='f') {this.filterPicker=!this.filterPicker;cx.notify();}
+    else if(k==='x') this.clearFilters(cx);
+    else if(this.filterPicker && ['1','2','3','4'].includes(k)) this.changeFilter('states',STATES[Number(k)-1],cx);
     else if(k==='enter') {this.detail=!this.detail;cx.notify();}
-    else if(k==='escape') {this.detail=false;this.search=false;this.review=null;this.pick=null;cx.notify();}
+    else if(k==='escape') {this.detail=false;this.search=false;this.filterPicker=false;this.review=null;this.pick=null;cx.notify();}
     else if(k==='r') this.act(this.selected()?.state.read_at?'unread':'read',cx);
     else if(k==='d') this.act(this.selected()?.state.done_at?'undo':'done',cx);
     else if(k==='z') this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]);
@@ -122,14 +141,22 @@ export default class Trough extends View {
           .child(div().text_size(11).text_color(t.muted).truncate().child(s.summary)));
       }
     }
-    const filterButton=(field)=>{const vals=choices(this.rows,field);return this.button(`filter-${field}`,`${field}: ${this.filter[field]??'all'}`,cx=>{this.filter[field]=cycle(vals,this.filter[field]);this.alignSelection();this.review=null;this.pick=null;cx.notify();},t,Boolean(this.filter[field]));};
+    const filterChoices=choices(this.rows,this.filterField).filter(Boolean);
+    const filterPicker=this.filterPicker?v_flex().gap(5)
+      .child(div().text_size(10).text_color(t.dim).child('States (AND): 1–4 toggle'))
+      .child(h_flex().gap(5).children(STATES.map((state,i)=>this.button(`state-${i}`,`${i+1} ${state}`,cx=>this.changeFilter('states',state,cx),t,this.filter.states.includes(state)))))
+      .child(h_flex().gap(5).children(['source','kind','severity','subject'].map(field=>this.button(`field-${field}`,`${field}${this.filter[field].length?` (${this.filter[field].length})`:''}`,cx=>{this.filterField=field;cx.notify();},t,this.filterField===field))))
+      .child(v_flex().h(120).overflow_y_scrollbar().gap(3).children(filterChoices.length?filterChoices.map(value=>this.button(`filter-${this.filterField}-${value}`,value,cx=>this.changeFilter(this.filterField,value,cx),t,this.filter[this.filterField].includes(value))):[div().text_size(10).text_color(t.dim).child('No values yet')])):null;
     const header=v_flex().px(10).py(8).gap(7).bg(t.chrome).border_b(1).border_color(t.border)
       .child(h_flex().items_center().gap(6).child(div().flex_1().font_semibold().text_size(15).text_color(t.foreground).child('Trough'))
         .child(div().text_size(11).text_color(t.muted).child(`${unread} unread`))
         .when(this.rejected>0,el=>el.child(div().text_size(11).text_color(t.blocked).child(`${this.rejected} rejected`)))
         .child(this.button('refresh','↻',cx=>this.reload(cx),t)))
-      .child(h_flex().gap(5).children(VIEWS.map(v=>this.button(`view-${v}`,v,cx=>{this.view=v;this.alignSelection();this.review=null;this.pick=null;cx.notify();},t,this.view===v))))
-      .child(h_flex().gap(5).children(['source','kind','severity','subject'].map(filterButton)))
+      .child(h_flex().gap(5).items_center()
+        .child(this.button('filter-toggle','f Filters',cx=>{this.filterPicker=!this.filterPicker;cx.notify();},t,this.filterPicker))
+        .child(div().flex_1().truncate().text_size(11).text_color(t.muted).child(this.filterSummary()))
+        .child(this.button('filter-clear','x Clear',cx=>this.clearFilters(cx),t)))
+      .when(Boolean(filterPicker),el=>el.child(filterPicker))
       .when(Boolean(this.producers.length||this.producerSetupError),el=>el.child(div().text_size(10).text_color(this.producerSetupError?t.blocked:t.dim)
         .child(this.producerSetupError?`Producer: ${this.producerSetupError}`:this.producers.map(item=>{
           const status=this.producerHealth.get(item.id);
@@ -170,6 +197,6 @@ export default class Trough extends View {
       .when(Boolean(this.error),el=>el.child(div().px(10).py(6).text_color(t.blocked).child(this.error)))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().children(groupNodes.length?groupNodes:[div().p(12).text_color(t.muted).child('No stories in this view')]))
       .when(Boolean(detail),el=>el.child(detail))
-      .child(div().px(10).py(5).text_size(10).text_color(t.dim).child('j/k move · Enter detail · / search · f filter · r read · d done · z snooze · a review action'));
+      .child(div().px(10).py(5).text_size(10).text_color(t.dim).child('j/k move · Enter detail · / search · f filters · x clear · r read · d done · z snooze · a review action'));
   }
 }
