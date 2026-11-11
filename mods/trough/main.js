@@ -4,6 +4,7 @@ import { exec, watchFolder, theme, home, appHome, props, nextCommand } from 'her
 import { STATES, visible, groups, choices } from './feed.js';
 import { ProducerSchedule } from './producer-schedule.js';
 import { localTime, relativeTime } from './time.js';
+import { severityLabel } from './severity-label.js';
 
 const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'?t.working:severity==='notice'?t.accent:t.muted;
 
@@ -99,7 +100,7 @@ export default class Trough extends View {
   }
   filterSummary() {
     const parts=[...this.filter.states];
-    for(const field of ['source','kind','severity','subject']) if(this.filter[field].length) parts.push(`${field}: ${this.filter[field].join(', ')}`);
+    for(const field of ['source','kind','severity','subject']) if(this.filter[field].length) parts.push(`${field}: ${this.filter[field].map(value=>field==='severity'?severityLabel(value):value).join(', ')}`);
     if(this.input.value()) parts.push(`search: ${this.input.value()}`);
     return parts.join(' · ')||'current';
   }
@@ -135,7 +136,7 @@ export default class Trough extends View {
         const s=row.story,st=row.state,on=this.sel===s.id;
         groupNodes.push(v_flex().id(`story-${s.id}`).px(10).py(8).gap(3).bg(on?t.selected:t.surface).border_b(1).border_color(t.border).cursor_pointer().hover(el=>el.bg(t.hover))
           .on_click((_e,cx)=>{this.sel=s.id;this.detail=true;this.review=null;this.pick=null;this.handle.focus();cx.notify();})
-          .child(h_flex().gap(6).items_center().child(div().text_size(10).text_color(palette(s.severity,t)).child(s.severity.toUpperCase()))
+          .child(h_flex().gap(6).items_center().child(div().w(34).text_size(10).text_color(palette(s.severity,t)).child(severityLabel(s.severity)))
             .child(div().flex_1().truncate().font_semibold().text_color(st.read_at?t.muted:t.foreground).child(s.title))
             .child(div().text_size(10).text_color(t.dim).child(relativeTime(s.occurred_at))))
           .child(div().text_size(11).text_color(t.muted).child(`${s.source.label} · ${s.kind}${s.outcome?` · ${s.outcome}`:''}${st.done_at?' · done':''}`))
@@ -147,7 +148,7 @@ export default class Trough extends View {
       .child(div().text_size(10).text_color(t.dim).child('States (AND): 1–4 toggle'))
       .child(h_flex().gap(5).children(STATES.map((state,i)=>this.button(`state-${i}`,`${i+1} ${state}`,cx=>this.changeFilter('states',state,cx),t,this.filter.states.includes(state)))))
       .child(h_flex().gap(5).children(['source','kind','severity','subject'].map(field=>this.button(`field-${field}`,`${field}${this.filter[field].length?` (${this.filter[field].length})`:''}`,cx=>{this.filterField=field;cx.notify();},t,this.filterField===field))))
-      .child(v_flex().h(120).overflow_y_scrollbar().gap(3).children(filterChoices.length?filterChoices.map(value=>this.button(`filter-${this.filterField}-${value}`,value,cx=>this.changeFilter(this.filterField,value,cx),t,this.filter[this.filterField].includes(value))):[div().text_size(10).text_color(t.dim).child('No values yet')])):null;
+      .child(v_flex().h(120).overflow_y_scrollbar().gap(3).children(filterChoices.length?filterChoices.map(value=>this.button(`filter-${this.filterField}-${value}`,this.filterField==='severity'?severityLabel(value):value,cx=>this.changeFilter(this.filterField,value,cx),t,this.filter[this.filterField].includes(value))):[div().text_size(10).text_color(t.dim).child('No values yet')])):null;
     const header=v_flex().px(10).py(8).gap(7).bg(t.chrome).border_b(1).border_color(t.border)
       .child(h_flex().items_center().gap(6).child(div().flex_1().font_semibold().text_size(15).text_color(t.foreground).child('Trough'))
         .child(div().text_size(11).text_color(t.muted).child(`${unread} unread`))
@@ -168,7 +169,7 @@ export default class Trough extends View {
     const detail=selected&&this.detail?v_flex().px(12).py(10).gap(8).bg(t.background).border_t(1).border_color(t.border)
       .child(h_flex().justify_between().child(div().font_semibold().text_color(t.foreground).child(selected.story.title))
         .child(this.button('detail-close','×',cx=>{this.detail=false;cx.notify();},t)))
-      .child(div().text_size(11).text_color(t.muted).child(`${selected.story.source.label} · ${localTime(selected.story.occurred_at)} · ${selected.story.id}`))
+      .child(div().text_size(11).text_color(t.muted).child(`${severityLabel(selected.story.severity)} · ${selected.story.source.label} · ${localTime(selected.story.occurred_at)} · ${selected.story.id}`))
       .child(div().text_size(12).text_color(t.foreground).child(selected.story.summary))
       .when(Boolean(selected.story.decision),el=>el.child(div().text_color(t.accent).child(selected.story.decision.prompt)))
       .children((selected.story.links??[]).map(l=>div().text_size(11).text_color(t.muted).child(`${l.label}: ${l.url??l.path}`)))
