@@ -1,0 +1,44 @@
+const URL_CANDIDATE = /https?:\/\/[^\s<>"']+/gi;
+const TRAILING_PUNCTUATION = /[.,!?;:]+$/;
+
+export function isHttpUrl(value) {
+  if (typeof value !== 'string' || !/^https?:\/\//i.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function trimUrl(candidate) {
+  let url = candidate;
+  for (;;) {
+    const shorter = url.replace(TRAILING_PUNCTUATION, '');
+    if (shorter !== url) { url = shorter; continue; }
+    const close = url.at(-1);
+    const open = {')': '(', ']': '[', '}': '{'}[close];
+    if (open && [...url].filter(c => c === close).length > [...url].filter(c => c === open).length) {
+      url = url.slice(0, -1);
+      continue;
+    }
+    return url;
+  }
+}
+
+export function splitHttpLinks(text) {
+  const parts = [];
+  let start = 0;
+  for (const match of text.matchAll(URL_CANDIDATE)) {
+    const index = match.index;
+    if (index > 0 && /[\w@/.:\-]/.test(text[index - 1])) continue;
+    const url = trimUrl(match[0]);
+    if (!isHttpUrl(url)) continue;
+    if (index > start) parts.push({text: text.slice(start, index)});
+    parts.push({text: url, url});
+    start = index + url.length;
+  }
+  if (start < text.length || !parts.length) parts.push({text: text.slice(start)});
+  return parts;
+}
+

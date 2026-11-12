@@ -5,6 +5,7 @@ import { STATES, visible, groups, choices } from './feed.js';
 import { ProducerSchedule } from './producer-schedule.js';
 import { localTime, relativeTime } from './time.js';
 import { severityLabel } from './severity-label.js';
+import { isHttpUrl, splitHttpLinks } from './links.js';
 
 const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'?t.working:severity==='notice'?t.accent:t.muted;
 
@@ -160,6 +161,21 @@ export default class Trough extends View {
     else if(k==='a') {const action=this.selected()?.story.actions?.[0];if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
   }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
+  detailText(text,size,color,t) {
+    return h_flex().flex_wrap().text_size(size).text_color(color).children(splitHttpLinks(text).map(part=>{
+      const span=div().child(part.text);
+      return part.url?span.text_color(t.accent).underline().cursor_pointer()
+        .on_click((_e,cx)=>{cx.stop_propagation();if(isHttpUrl(part.url)) cx.open_url(part.url);}):span;
+    }));
+  }
+  detailLink(link,t) {
+    const destination=link.url??link.path;
+    const value=div().child(destination);
+    if(isHttpUrl(destination)) value.text_color(t.accent).underline().cursor_pointer()
+      .on_click((_e,cx)=>{cx.stop_propagation();cx.open_url(destination);});
+    return h_flex().flex_wrap().text_size(11).text_color(t.muted)
+      .child(div().child(`${link.label}: `)).child(value);
+  }
   render(cx) {
     const t=theme(),shown=this.filtered(),g=groups(shown),selected=this.selected(),unread=this.rows.filter(r=>!r.state.read_at).length;
     const groupNodes=[];
@@ -208,9 +224,9 @@ export default class Trough extends View {
       .child(h_flex().justify_between().child(div().font_semibold().text_color(t.foreground).child(selected.story.title))
         .child(this.button('detail-close','×',cx=>{this.detail=false;cx.notify();},t)))
       .child(div().text_size(11).text_color(t.muted).child(`${severityLabel(selected.story.severity)} · ${selected.story.source.label} · ${localTime(selected.story.occurred_at)} · ${selected.story.id}`))
-      .child(div().text_size(12).text_color(t.foreground).child(selected.story.summary))
-      .when(Boolean(selected.story.decision),el=>el.child(div().text_color(t.accent).child(selected.story.decision.prompt)))
-      .children((selected.story.links??[]).map(l=>div().text_size(11).text_color(t.muted).child(`${l.label}: ${l.url??l.path}`)))
+      .child(this.detailText(selected.story.summary,12,t.foreground,t))
+      .when(Boolean(selected.story.decision),el=>el.child(this.detailText(selected.story.decision.prompt,12,t.accent,t)))
+      .children((selected.story.links??[]).map(l=>this.detailLink(l,t)))
       .when(Boolean(latest),el=>el.child(div().text_size(11).text_color(latest.outcome==='failed'?t.blocked:t.muted).child(`Last action: ${latest.outcome}${latest.result?` · ${latest.result}`:''}`)))
       .when(Boolean(selected.story.actions?.length),el=>el.child(h_flex().gap(5).children(selected.story.actions.map(a=>this.button(`action-${a.id}`,a.label,cx=>{
         this.review=null;
