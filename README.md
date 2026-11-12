@@ -65,7 +65,11 @@ To enable the package, add it to the operator's `$TROUGH_DIR/handlers.json` with
           ]
         }
       },
-      "task_categories": {"credential-task-id": "credential"}
+      "task_categories": {"credential-task-id": "credential"},
+      "story_kinds": {
+        "project": {"enabled": false},
+        "agent": {"min_severity": "warning"}
+      }
     }
   }]
 }
@@ -74,18 +78,24 @@ To enable the package, add it to the operator's `$TROUGH_DIR/handlers.json` with
 Configure exact decision words and `done` or `release` consequences before the first sync for a hold.
 Holds without configured options are view-only decision cards because Firstmate's hold record does not encode answer choices.
 `task_categories` can mark a held task as `credential` or `hands_on` for a separate attention card without copying any secret value into a story.
+`story_kinds` accepts `decision`, `credential`, `hands_on`, `merge`, `agent`, `report`, `project`, and `prompt_ack`.
+Each kind accepts `enabled` and `min_severity` (`info`, `notice`, `warning`, or `critical`); omitted settings use the defaults.
+By default, all kinds are enabled except `prompt_ack`, and each enabled kind accepts `info` or higher.
+Captain holds and owner actions appear at `notice`, automatic merges, landings, deploys, finished reports, and project changes at `info`, and failures or missed targets at `warning`.
+Closing a captain hold marks its existing decision card done and read with `done_by: "firstmate-sync"` in operator state; it creates no completion story and never answers the hold.
+Ongoing work and outcomes already represented by a merge or decision are not posted.
 
 Run `packages/firstmate/bin/trough-firstmate sync --dir "$TROUGH_DIR"` to publish changes.
 The first sync records a history baseline and publishes current captain holds. Later syncs publish newer branch outcomes, merges, and finished reports. To import older records explicitly, run `packages/firstmate/bin/trough-firstmate sync --dir "$TROUGH_DIR" --backfill YYYY-MM-DD` (an RFC 3339 timestamp also works). Backfill applies to that invocation only.
 While the Trough pane is open, its configured Firstmate producer syncs on opening and every two minutes. Set `"sync_interval_seconds": N` in the package's `options` for another positive integer interval. The pane shows the last run and last error in its header. The command also accepts `--home` for an explicit home and `--interval-seconds N` for a persistent producer outside the pane.
 It reads the local backlog snapshot, branch outcomes, merge records, and project registry without changing Firstmate tracked files.
 The optional Firstmate `config/fleet-ledger` flag adds merge and status history to the feed when enabled by the operator.
-The first sync also establishes a project registry baseline; later additions and removals create project stories. Branch outcomes already represented by a merge or captain decision are omitted, and repeated outcomes for one task share a group.
+The first sync also establishes a project registry baseline; later additions and removals create project stories. Repeated outcomes for one task share a group.
 Finished report cards link the report file and offer the built-in reading-list action.
 Policy anomalies require a structured Firstmate record and are covered in [the draft proposals](docs/firstmate-proposals.md).
 
 `deliver_prompt` actions name a local Firstmate task ID, its `spawn_gen`, and exact text.
 Review rechecks the live task, and run checks it again before calling `fm-send.sh` with `FM_HOME` and the expected generation explicitly set.
 The handler rejects leading `/` or `$`, parked tasks, replaced tasks, and remote second mates; a local second mate uses `--fire-and-forget` to avoid creating a reply expectation.
-Delivery is asynchronous, and a later sync reports when the exact inbox record reaches `handled/`.
+Delivery is asynchronous, and a later sync records when the exact inbox record reaches `handled/`; `prompt_ack` stories are muted by default.
 `answer_firstmate_decision` calls `fm-captain-hold.sh answer` with a decision file containing the selected words and uses `--release` for configured release options.

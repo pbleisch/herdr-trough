@@ -121,14 +121,14 @@ export async function readState(root,id) {
   try { const raw=await fs.readFile(path.join(root,'state',`${id}.json`),'utf8'); const s=JSON.parse(raw); return s.v===1 ? s : {v:1}; }
   catch(e) { if (e.code==='ENOENT') return {v:1}; throw e; }
 }
-export async function setState(root,id,operation,until) {
+export async function setState(root,id,operation,until,actor) {
   return withStateLock(root,async()=>{
     await stored(root,id);
     const s=await readState(root,id);
     if (operation==='read') s.read_at=now();
     else if (operation==='unread') delete s.read_at;
-    else if (operation==='done') { s.done_at=now(); s.read_at??=s.done_at; }
-    else if (operation==='undo') delete s.done_at;
+    else if (operation==='done') { s.done_at=now(); s.read_at??=s.done_at; if(actor) s.done_by=actor; else delete s.done_by; }
+    else if (operation==='undo') { delete s.done_at; delete s.done_by; }
     else if (operation==='snooze') { timestamp(until,'until'); s.snoozed_until=until; }
     else throw new Error('unknown state operation');
     await replaceAtomic(folder(root,'state'),`${id}.json`,Buffer.from(JSON.stringify({v:1,...s})+'\n'));

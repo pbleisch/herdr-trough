@@ -94,28 +94,41 @@ test('backfill publishes plain merge and branch stories once, groups outcomes, a
   assert.deepEqual(JSON.parse((await fs.readFile(path.join(home,'answers.log'),'utf8')).trim()),
     {task:holdId,words:'Proceed with launch',mode:'release'});
   await sync(root,packageOptions);
-  assert.ok((await list(root)).some(row=>row.story.title===`Captain hold released: ${holdId}`));
+  const closed=await list(root);
+  assert.equal(closed.length,changed.length);
+  assert.equal(closed.find(row=>row.story.id===decision.story.id).state.done_by,'firstmate-sync');
+  assert.ok(closed.find(row=>row.story.id===decision.story.id).state.done_at);
+  assert.ok(closed.find(row=>row.story.id===decision.story.id).state.read_at);
+  assert.ok(!closed.some(row=>row.story.title.startsWith('Captain hold released:')));
 });
 
 test('Firstmate branch outcomes use structured results before text and classify unstructured summaries',async()=>{
   const {home,root,packageOptions}=await setup();
   const cases=[
     ['landing','Composable features landing. The change is complete.','info'],
-    ['auto','Ready and auto-landing after checks.','info'],
+    ['auto','Ready and auto-landing after checks.',null],
     ['approval','The deployment needs approval.','notice'],
     ['review','Pull request ready for review.','notice'],
     ['blocked','Work is blocked on a failed check.','warning'],
     ['missed','The check missed its target.','warning'],
     ['structured-done','This needs approval.', 'info',{status_verb:'done'}],
     ['structured-failed','The feature landed.', 'warning',{status_verb:'failed'}],
-    ['structured-decision','The feature landed.', 'notice',{outcome_kind:'decision'}]
+    ['structured-decision','The feature landed.', 'notice',{outcome_kind:'decision'}],
+    ['structured-paused','The feature landed.', null,{status_verb:'paused'}],
+    ['structured-closed','Approval needed.', null,{outcome_kind:'decision',hold_state:'closed'}],
+    ['progress','Still working on landing. No action needed.',null],
+    ['vague','Here is an update on the work.',null],
+    ['build','Waiting on a build; no action needed.',null],
+    ['owner-wait','Waiting for the owner to provide a credential.','notice'],
+    ['structured-hold-open','Checks passed.', 'notice',{hold_state:'open',status_verb:'paused'}],
+    ['structured-blocked','Work finished.', 'warning',{status_verb:'blocked'}]
   ];
   await fs.writeFile(path.join(home,'state','branch-outcomes.jsonl'),cases.map(([task,summary,,extra],index)=>
     JSON.stringify({seq:index+10,epoch:1794416900+index,task,verdict:'captain',summary,silent:false,...extra})).join('\n')+'\n');
   await sync(root,packageOptions,{backfillSince:'2026-11-01'});
   const stories=(await list(root)).filter(row=>row.story.kind==='agent');
-  assert.equal(stories.length,cases.length);
-  for(const [task,,severity] of cases) assert.equal(stories.find(row=>row.story.subject.key===task)?.story.severity,severity,task);
+  assert.equal(stories.length,cases.filter(([, ,severity])=>severity).length);
+  for(const [task,,severity] of cases) assert.equal(stories.find(row=>row.story.subject.key===task)?.story.severity, severity??undefined,task);
 });
 
 test('Firstmate failed and refused merges are warnings',async()=>{
@@ -130,6 +143,79 @@ test('Firstmate failed and refused merges are warnings',async()=>{
   const failures=(await list(root)).filter(row=>row.story.kind==='merge'&&row.story.outcome==='failed');
   assert.equal(failures.length,2);
   assert.ok(failures.every(row=>row.story.severity==='warning'));
+});
+
+test('external hold closure quietly completes and reads the existing decision without answering',async()=>{
+  const {home,root,packageOptions}=await setup();
+  await sync(root,packageOptions);
+  const decision=(await list(root)).find(entry=>entry.story.kind==='decision');
+  const oldResolution={...decision.story,id:'3'.repeat(32),title:`Captain hold completed: ${holdId}`,
+    summary:'Firstmate records the captain hold as completed.',outcome:'succeeded',actions:undefined,
+    decision:{question_id:'resolution_legacy',prompt:'The hold is completed.',options:[]}};
+  await post(root,Buffer.from(JSON.stringify(oldResolution)+'\n'));
+  const before=await list(root);
+  const snapshot=JSON.parse(await fs.readFile(path.join(home,'fixture-snapshot.json'),'utf8'));
+  const held=snapshot.backlog.records.find(row=>row.id===holdId);
+  held.hold_kind=null;
+  held.state='done';
+  await fs.writeFile(path.join(home,'fixture-snapshot.json'),JSON.stringify(snapshot));
+  await fs.rename(path.join(home,'state',`${holdId}.hold`),path.join(home,'state',`${holdId}.closed`));
+  await sync(root,packageOptions);
+  const after=await list(root),closed=after.find(entry=>entry.story.id===decision.story.id);
+  assert.equal(after.length,before.length);
+  assert.ok(closed.state.done_at);
+  assert.equal(closed.state.read_at,closed.state.done_at);
+  assert.equal(closed.state.done_by,'firstmate-sync');
+  assert.equal(after.find(entry=>entry.story.id===oldResolution.id).state.done_by,'firstmate-sync');
+  assert.ok(after.find(entry=>entry.story.id===oldResolution.id).state.read_at);
+  await assert.rejects(fs.access(path.join(home,'answers.log')));
+  await sync(root,packageOptions);
+  assert.deepEqual((await list(root)).find(entry=>entry.story.id===decision.story.id).state,closed.state);
+});
+
+test('branch outcomes repeat neither PR merges nor previously posted landings',async()=>{
+  const {home,root,packageOptions}=await setup();
+  await fs.appendFile(path.join(home,'state','branch-outcomes.jsonl'),[
+    {seq:6,epoch:1794416900,task:'other-task',verdict:'captain',status_verb:'done',summary:'Merged independently.',pr_url:'https://github.com/example/repo/pull/7/?view=files'},
+    {seq:7,epoch:1794416901,task:'landing-task',verdict:'captain',status_verb:'done',summary:'Local landing completed.'}
+  ].map(row=>JSON.stringify(row)).join('\n')+'\n');
+  await sync(root,packageOptions,{backfillSince:'2026-11-01'});
+  let agents=(await list(root)).filter(entry=>entry.story.kind==='agent');
+  assert.ok(!agents.some(entry=>entry.story.subject.key==='other-task'));
+  assert.equal(agents.find(entry=>entry.story.subject.key==='landing-task').story.severity,'info');
+  await fs.appendFile(path.join(home,'state','branch-outcomes.jsonl'),
+    JSON.stringify({seq:8,epoch:1794416902,task:'landing-task',verdict:'captain',summary:'The local branch was landed.',silent:false})+'\n');
+  await sync(root,packageOptions,{backfillSince:'2026-11-01'});
+  agents=(await list(root)).filter(entry=>entry.story.kind==='agent');
+  assert.equal(agents.filter(entry=>entry.story.subject.key==='landing-task').length,1);
+});
+
+test('later progress does not hide a warning waiting in the same branch outcome batch',async()=>{
+  const {home,root,packageOptions}=await setup();
+  await fs.appendFile(path.join(home,'state','branch-outcomes.jsonl'),[
+    {seq:6,epoch:1794416900,task:'broken-task',verdict:'captain',status_verb:'failed',summary:'The merge failed.'},
+    {seq:7,epoch:1794416901,task:'broken-task',verdict:'captain',status_verb:'working',summary:'Still working on the fix.'}
+  ].map(row=>JSON.stringify(row)).join('\n')+'\n');
+  await sync(root,packageOptions,{backfillSince:'2026-11-01'});
+  const story=(await list(root)).find(entry=>entry.story.subject?.key==='broken-task');
+  assert.equal(story.story.severity,'warning');
+});
+
+test('story kind switches and minimum severity filter published stories',async()=>{
+  const {home,root,packageOptions}=await setup();
+  await fs.appendFile(path.join(home,'state','branch-outcomes.jsonl'),[
+    {seq:6,epoch:1794416900,task:'warning-task',verdict:'captain',status_verb:'blocked',summary:'Still working.'},
+    {seq:7,epoch:1794416901,task:'done-task',verdict:'captain',status_verb:'done',summary:'Work finished.'}
+  ].map(row=>JSON.stringify(row)).join('\n')+'\n');
+  const configured={...packageOptions,story_kinds:{decision:{enabled:false},hands_on:{enabled:false},merge:{min_severity:'warning'},
+    agent:{min_severity:'warning'},report:{enabled:false},project:{enabled:false}}};
+  await sync(root,configured,{backfillSince:'2026-11-01'});
+  const stories=(await list(root)).map(entry=>entry.story);
+  assert.deepEqual(stories.map(story=>story.kind),['agent']);
+  assert.equal(stories[0].subject.key,'warning-task');
+  assert.equal(stories[0].severity,'warning');
+  await assert.rejects(sync(root,{...packageOptions,story_kinds:{agent:{min_severity:'severe'}}}),/invalid Firstmate story_kinds rule/);
+  await assert.rejects(sync(root,{...packageOptions,story_kinds:{unknown:{enabled:true}}}),/invalid Firstmate story_kinds rule/);
 });
 
 test('first sync baselines historical records and later sync publishes only new records',async()=>{
@@ -178,6 +264,8 @@ test('prompt delivery uses the exact task generation and durable inbox, then obs
   assert.match(await fs.readFile(record,'utf8'),/Inspect the result and report back/);
   await fs.rename(record,path.join(home,'state','crew.inbox','handled','1.msg'));
   await sync(root,packageOptions);
+  assert.ok(!(await list(root)).some(row=>row.story.title==='Prompt acknowledged by crew'));
+  await sync(root,{...packageOptions,story_kinds:{prompt_ack:{enabled:true}}});
   assert.ok((await list(root)).some(row=>row.story.title==='Prompt acknowledged by crew'));
 });
 

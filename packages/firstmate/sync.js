@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { list, post, stored } from '../../mods/trough/core/store.js';
+import { list, post, setState, stored } from '../../mods/trough/core/store.js';
 import { configuredHome, backlog, holdIdentity, integrationDir, iso, limited, sha, source, storyId, storyHash, writeJson } from './common.js';
 import { findNewRecord } from './index.js';
 
@@ -11,18 +11,41 @@ const isHold=row=>row?.structured===true&&row?.hold_kind==='captain'&&row?.state
 const base=(home,type,identity,occurredAt)=>({v:1,id:storyId(home,type,identity),source:source(home),occurred_at:occurredAt,severity:'info'});
 const firstSentence=value=>clean(value,4096).trim().split(/(?<=[.!?])\s|\n/)[0].trim();
 const taskTitle=(rows,task)=>rows.find(row=>row.id===task)?.title?.trim()||'';
-function branchSeverity(row) {
+const severityRank={info:0,notice:1,warning:2,critical:3};
+const defaultKinds={decision:true,credential:true,hands_on:true,merge:true,agent:true,report:true,project:true,prompt_ack:false};
+function kindPolicy(options) {
+  const configured=options.story_kinds??{};
+  if(!configured||typeof configured!=='object'||Array.isArray(configured)) throw new Error('story_kinds must be an object');
+  for(const [kind,rule] of Object.entries(configured)) {
+    if(!Object.hasOwn(defaultKinds,kind)||!rule||typeof rule!=='object'||Array.isArray(rule)||
+      Object.keys(rule).some(key=>!['enabled','min_severity'].includes(key))||
+      (rule.enabled!==undefined&&typeof rule.enabled!=='boolean')||
+      (rule.min_severity!==undefined&&!Object.hasOwn(severityRank,rule.min_severity))) throw new Error(`invalid Firstmate story_kinds rule: ${kind}`);
+  }
+  return story=>{
+    const rule=configured[story.kind]??{};
+    return (rule.enabled??defaultKinds[story.kind]??false)&&
+      severityRank[story.severity]>=severityRank[rule.min_severity??'info'];
+  };
+}
+const normalized=value=>typeof value==='string'?value.toLowerCase().replaceAll('_','-'):null;
+function branchDisposition(row) {
   const kind=row.outcome_kind??row.outcome?.kind??row.outcome;
   const verb=row.status_verb??row.status?.verb;
-  const structured=[kind,verb].filter(value=>typeof value==='string').map(value=>value.toLowerCase().replaceAll('_','-'));
+  const hold=normalized(row.hold_state??row.hold?.state);
+  const structured=[kind,verb,row.authority].map(normalized).filter(Boolean);
+  if(hold==='closed'||(normalized(kind)==='decision'&&['done','completed','closed'].includes(normalized(verb)))) return null;
   if(structured.some(value=>/^(blocked|failed|refused|missed|at-risk)$/.test(value))) return 'warning';
-  if(structured.some(value=>/^(decision|approval|credential|install|hands-on|review|waiting|pending)$/.test(value))) return 'notice';
-  if(structured.some(value=>/^(done|landed|merged|finished|completed|auto-landing|succeeded)$/.test(value))) return 'info';
+  if(hold==='open'||structured.some(value=>/^(decision|approval|credential|install|hands-on|review|owner-action|captain-action)$/.test(value))) return 'notice';
+  if(structured.some(value=>/^(done|landed|merged|finished|completed|auto-landing|succeeded|deployed)$/.test(value))) return 'info';
+  if(structured.some(value=>/^(paused|working|in-progress|waiting|pending|running|continuing)$/.test(value))) return null;
   const summary=String(row.summary??'').toLowerCase();
   if(/\b(blocked|blocking|failed|failure|refused|rejected|red ci|missed (?:its |the )?target|at risk|cannot (?:merge|land|proceed))\b/.test(summary)) return 'warning';
-  if(/\b(auto[- ]?land(?:ing)?|landed|landing|merged|finished|completed|complete|deployed|done)\b/.test(summary)) return 'info';
-  if(/\b(waiting|awaiting|decision|approval|approve|credential|install|hands[- ]on|manual step|ready (?:for|to) review|review requested)\b/.test(summary)) return 'notice';
-  return 'notice';
+  if(/\b(waiting (?:for|on) (?:the )?(?:captain|owner|user|approval|decision|credential)|awaiting (?:approval|decision|credentials?|the captain|the owner)|decision needed|needs? approval|credential needed|hands[- ]on|manual (?:step|check)|needs? (?:a )?manual check|needs? review|review requested)\b/.test(summary)) return 'notice';
+  if(/\b(still working|in progress|waiting (?:for|on) (?:a |the )?(?:build|checks?|ci)|no action needed|checks? running|running checks?|continuing work|work continues|auto[- ]?landing|ready to land)\b/.test(summary)) return null;
+  if(/\b(landed|merged|finished|completed|complete|deployed|done)\b/.test(summary)) return 'info';
+  if(/\b(decision|approval|approve|credential|install|ready (?:for|to) review)\b/.test(summary)) return 'notice';
+  return null;
 }
 function prLocation(value) {
   try {
@@ -155,17 +178,34 @@ async function mergeStories(home,rows) {
   return {stories:[...unique.values()].map(entry=>entry.story),representedTasks};
 }
 
-async function branchStories(home,representedTasks) {
+const canonicalSubjectUrl=value=>{
+  if(typeof value!=='string') return null;
+  try {
+    const url=new URL(value);
+    if(url.protocol!=='https:'||url.username||url.password) return null;
+    return `${url.origin}${url.pathname.replace(/\/+$/,'')}`;
+  } catch { return null; }
+};
+const subjectUrl=row=>{
+  const explicit=[row.pr_url,row.pr,row.url,row.subject?.url].find(value=>typeof value==='string'&&value.startsWith('https://'));
+  return canonicalSubjectUrl(explicit??/(https:\/\/[^\s)<>]+)/.exec(row.summary??'')?.[1]?.replace(/[.,;:!?]+$/,''));
+};
+async function branchStories(home,representedTasks,representedUrls) {
   const rows=await readLines(path.join(home,'state','branch-outcomes.jsonl'));
   const latest=new Map();
   for(const row of rows) {
-    if(!Number.isSafeInteger(row.seq)||!Number.isFinite(row.epoch)||row.verdict!=='captain'||row.silent||!row.task||representedTasks.has(row.task)) continue;
+    if(!Number.isSafeInteger(row.seq)||!Number.isFinite(row.epoch)||row.verdict!=='captain'||row.silent||!row.task||
+      representedTasks.has(row.task)||representedUrls.has(subjectUrl(row))) continue;
+    const closed=normalized(row.hold_state??row.hold?.state)==='closed';
+    if(branchDisposition(row)===null&&!closed) continue;
     if(!latest.has(row.task)||latest.get(row.task).seq<row.seq) latest.set(row.task,row);
   }
-  return [...latest.values()].map(row=>({...base(home,'branch',String(row.seq),iso(row.epoch)),kind:'agent',
+  return [...latest.values()].map(row=>({row,severity:branchDisposition(row)})).filter(entry=>entry.severity!==null)
+    .map(({row,severity})=>({...base(home,'branch',String(row.seq),iso(row.epoch)),kind:'agent',
       title:clean(firstSentence(row.summary)||`Outcome for ${row.task}`,200),
       summary:clean(row.summary,4096)||`Firstmate recorded an outcome for ${row.task}.`,
-      severity:branchSeverity(row),group_key:`branch:${row.task}`,subject:{type:'task',key:clean(row.task,256)},
+      severity,...(severity==='info'?{outcome:'succeeded'}:{}),
+      group_key:`branch:${row.task}`,subject:{type:'task',key:clean(row.task,256)},
       provenance:{task_id:clean(row.task,128),event_id:`branch:${row.seq}`}}));
 }
 
@@ -282,7 +322,7 @@ async function observeDeliveries(home,root) {
       await writeJson(dir,name,delivery);
     }
     if(delivery.status!=='acknowledged'||!delivery.acknowledged_at) continue;
-    stories.push({...base(home,'prompt_ack',delivery.token,delivery.acknowledged_at),kind:'agent',
+    stories.push({...base(home,'prompt_ack',delivery.token,delivery.acknowledged_at),kind:'prompt_ack',
       title:`Prompt acknowledged by ${delivery.task_id}`,summary:`Firstmate task ${delivery.task_id} handled steering inbox record ${delivery.record}.`,
       outcome:'succeeded',group_key:`prompt:${delivery.task_id}`,subject:{type:'task',key:delivery.task_id},
       provenance:{task_id:delivery.task_id,event_id:`prompt_ack:${delivery.token}`}});
@@ -292,6 +332,7 @@ async function observeDeliveries(home,root) {
 
 export async function sync(root,options,{backfillSince}={}) {
   const home=configuredHome(options),dir=integrationDir(root,home),lock=path.join(dir,'.sync.lock');
+  const allows=kindPolicy(options);
   const backfillAt=backfillSince===undefined?null:historySince(backfillSince);
   await fs.mkdir(dir,{recursive:true,mode:0o700});
   try { await fs.mkdir(lock,{mode:0o700}); }
@@ -307,23 +348,30 @@ export async function sync(root,options,{backfillSince}={}) {
     const holds=await holdStories(home,root,options,rows);
     const projects=projectChanges(home,state,names,now);
     const byId=new Map(rows.map(row=>[row.id,row]));
-    const resolutions=[];
+    const existing=(await list(root)).filter(entry=>entry.story.source.id===source(home).id);
+    for(const entry of existing) {
+      if(entry.story.kind==='decision'&&entry.story.decision?.question_id?.startsWith('resolution_')&&!entry.state.done_at)
+        await setState(root,entry.story.id,'done',undefined,'firstmate-sync');
+    }
     for(const [task,prior] of Object.entries(state.holds??{})) {
       if(holds.current[task]?.identity===prior.identity) continue;
       const row=byId.get(task);
-      if(!row||isHold(row)) continue;
-      const identity=`${task}:${prior.identity}`,mode=row.state==='done'?'completed':'released';
-      resolutions.push({...base(home,'hold_resolution',identity,now),kind:'decision',
-        title:`Captain hold ${mode}: ${task}`,summary:`Firstmate records the captain hold on ${task} as ${mode}.`,
-        outcome:'succeeded',group_key:`decision:${task}`,subject:{type:'task',key:task},
-        provenance:{task_id:task,event_id:identity},decision:{question_id:`resolution_${sha(identity).slice(0,16)}`,prompt:`The captain hold on ${task} is ${mode}.`,options:[]}});
+      if(!row&&holdIdentity(home,task)) continue;
+      const id=storyId(home,'hold',`${task}:${prior.identity}`);
+      const card=existing.find(entry=>entry.story.id===id&&entry.story.kind==='decision');
+      if(card&&!card.state.done_at) await setState(root,id,'done',undefined,'firstmate-sync');
     }
-    const pending=[...(state.pending_events??[]),...projects.events,...resolutions];
+    const pending=[...(state.pending_events??[]).filter(event=>event.kind!=='decision'),...projects.events];
     const merges=await mergeStories(home,rows);
-    const priorDecisions=(await list(root)).filter(row=>row.story.kind==='decision'&&row.story.source.id===source(home).id)
-      .map(row=>row.story.provenance?.task_id).filter(Boolean);
-    const represented=new Set([...merges.representedTasks,...Object.keys(holds.current),...priorDecisions]);
-    const allHistory=[...merges.stories,...await branchStories(home,represented),...await reportStories(home,rows)];
+    const priorDecisions=existing.filter(entry=>entry.story.kind==='decision').map(entry=>entry.story.provenance?.task_id).filter(Boolean);
+    const priorCompleted=existing.filter(entry=>entry.story.kind==='merge'||
+      entry.story.kind==='agent'&&entry.story.severity==='info')
+      .map(entry=>entry.story.provenance?.task_id).filter(Boolean);
+    const represented=new Set([...merges.representedTasks,...Object.keys(holds.current),...priorDecisions,...priorCompleted]);
+    const representedUrls=new Set([...merges.stories,...existing.map(entry=>entry.story)]
+      .filter(story=>['merge','decision'].includes(story.kind)||story.kind==='agent'&&story.severity==='info')
+      .flatMap(story=>story.links?.map(link=>canonicalSubjectUrl(link.url)).filter(Boolean)??[]));
+    const allHistory=[...merges.stories,...await branchStories(home,represented,representedUrls),...await reportStories(home,rows)];
     const baselineIds=firstSync?allHistory.map(story=>story.id):state.baseline_ids??[];
     const historicalIds=new Set(baselineIds);
     const history=allHistory.filter(story=>backfillAt===null?
@@ -331,11 +379,11 @@ export async function sync(root,options,{backfillSince}={}) {
       Date.parse(story.occurred_at)>=cutoff);
     await writeJson(dir,'sync.json',{v:1,baseline_at:baselineAt,baseline_ids:baselineIds,projects:names,
       project_generations:projects.generations,holds:holds.current,pending_events:pending});
-    const stories=[...pending,...history,...holds.stories.map(entry=>entry.story),...await observeDeliveries(home,root)];
+    const stories=[...pending,...history,...holds.stories.map(entry=>entry.story),...await observeDeliveries(home,root)].filter(allows);
     let posted=0;
     for(const story of stories) if(await publish(root,story)) posted++;
     for(const {story,routeOptions} of holds.stories) {
-      if(!routeOptions) continue;
+      if(!routeOptions||!allows(story)) continue;
       const actual=await stored(root,story.id);
       if(JSON.stringify(actual.story.decision.options)!==JSON.stringify(story.decision.options)) continue;
       const route={v:1,story_hash:await storyHash(root,story.id),task_id:story.provenance.task_id,
