@@ -1,5 +1,8 @@
 {
   "name": "herdr-trough",
+  "version": "0.1.0",
+  "description": "A local activity feed for Herdr desktop: tools publish stories, the operator reads, files and reviews actions in a pane.",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {"test": "node --test test/*.test.mjs"}
