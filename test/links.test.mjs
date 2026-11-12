@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isHttpUrl, splitHttpLinks, splitDetailLinks } from '../mods/trough/links.js';
+import { isHttpUrl, splitHttpLinks, splitDetailLinks, actionLink } from '../mods/trough/links.js';
 
 test('only absolute HTTP(S) URLs with a host are openable', () => {
   assert.equal(isHttpUrl('https://example.com/path'), true);
@@ -47,3 +47,12 @@ test('does not turn URL components or relative paths into local paths', () => {
   ]);
 });
 
+
+test('a declared action belongs to the link its link argument names', () => {
+  const story = {links: [{id: 'report', label: 'Report', path: '/tmp/report.md'}]};
+  assert.equal(actionLink({id: 'save', handler: 'add_to_reading_list', args: {link: 'report'}}, story), 'report');
+  assert.equal(actionLink({id: 'save', handler: 'custom', args: {link: 'gone'}}, story), null);
+  assert.equal(actionLink({id: 'save', handler: 'custom', args: {link: 7}}, story), null);
+  assert.equal(actionLink({id: 'ack', handler: 'custom'}, story), null);
+  assert.equal(actionLink({id: 'save', handler: 'custom', args: {link: 'report'}}, {}), null);
+});

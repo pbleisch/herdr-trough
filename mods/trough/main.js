@@ -5,7 +5,7 @@ import { STATES, visible, groups, choices } from './feed.js';
 import { ProducerSchedule } from './producer-schedule.js';
 import { localTime, relativeTime } from './time.js';
 import { severityLabel } from './severity-label.js';
-import { isHttpUrl, splitDetailLinks } from './links.js';
+import { isHttpUrl, splitDetailLinks, actionLink } from './links.js';
 
 const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'?t.working:severity==='notice'?t.accent:t.muted;
 
@@ -207,6 +207,21 @@ export default class Trough extends View {
     return offer.available?this.button(`offer-${offer.id}`,offer.label,cx=>this.offerAct(offer,cx),t)
       :this.disabledButton(`offer-${offer.id}`,offer.label,t);
   }
+  // An action the story declares itself.
+  actionButton(row,action,t) {
+    return this.actionBlocked(row,action)?this.disabledButton(`action-${action.id}`,action.label,t):this.button(`action-${action.id}`,action.label,cx=>{
+      this.review=null;
+      if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();} else this.actionReview(action,cx);
+    },t);
+  }
+  // One wrapping row of action buttons (story-declared ones and pack offers), with a line under it for each that cannot run.
+  // min_w(0) lets a label longer than the pane wrap inside its button instead of running off the edge.
+  actionRow(row,items,t) {
+    const blocked=items.map(item=>[item.label,item.pack?(item.available?null:item.reason):this.actionBlocked(row,item)]).filter(([,reason])=>reason);
+    return v_flex().gap(3)
+      .child(h_flex().flex_wrap().gap(5).children(items.map(item=>(item.pack?this.offerButton(item,t):this.actionButton(row,item,t)).min_w(0))))
+      .children(blocked.map(([label,reason])=>div().text_size(10).text_color(t.dim).child(`${label} is unavailable: ${reason}`)));
+  }
   checkbox(id,label,on,fn,t) {
     return h_flex().id(id).gap(6).items_center().cursor_pointer().on_click((_e,cx)=>fn(cx))
       .child(div().w(13).h(13).flex_none().rounded(3).border(1).border_color(on?t.accent:t.muted).bg(on?t.accent:t.surface).flex().items_center().justify_center().text_size(10).text_color(t.background).child(on?'✓':''))
@@ -214,24 +229,25 @@ export default class Trough extends View {
   }
   disabledButton(id,label,t) { return div().id(id).px(8).py(5).rounded(5).border(1).border_color(t.border).text_color(t.dim).child(label); }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
+  // Text only wraps once its box may be narrower than the text: a flex item needs min_w(0) for that.
   detailText(text,size,color,t) {
     return h_flex().flex_wrap().text_size(size).text_color(color).children(splitDetailLinks(text).map(part=>{
-      const span=div().child(part.text);
+      const span=div().min_w(0).child(part.text);
       return part.url||part.path?span.text_color(t.accent).underline().cursor_pointer()
         .on_click((_e,cx)=>{cx.stop_propagation();if(part.path) this.openLocalPath(part.path,cx); else if(isHttpUrl(part.url)) cx.open_url(part.url);}):span;
     }));
   }
-  detailLink(link,t) {
+  detailLink(row,link,t) {
     const destination=link.url??link.path;
-    const value=div().child(destination);
+    const value=div().min_w(0).child(destination);
     if(link.path||isHttpUrl(destination)) value.text_color(t.accent).underline().cursor_pointer()
       .on_click((_e,cx)=>{cx.stop_propagation();if(link.path) this.openLocalPath(link.path,cx); else cx.open_url(destination);});
-    const offers=(this.selected()?.offers??[]).filter(offer=>offer.link===link.id);
+    // What packs offer on this link, then what the story itself declares for it.
+    const actions=[...(row.offers??[]).filter(offer=>offer.link===link.id),...(row.story.actions??[]).filter(action=>actionLink(action,row.story)===link.id)];
     return v_flex().gap(3)
       .child(h_flex().flex_wrap().text_size(11).text_color(t.muted)
-        .child(div().child(`${link.label}${link.role?` (${link.role})`:''}: `)).child(value))
-      .when(Boolean(offers.length),el=>el.child(h_flex().flex_wrap().gap(5).text_size(11).children(offers.map(offer=>this.offerButton(offer,t)))))
-      .children(offers.filter(offer=>!offer.available).map(offer=>div().text_size(10).text_color(t.dim).child(`${offer.label} is unavailable: ${offer.reason}`)));
+        .child(div().min_w(0).child(`${link.label}${link.role?` (${link.role})`:''}: `)).child(value))
+      .when(Boolean(actions.length),el=>el.child(this.actionRow(row,actions,t).text_size(11)));
   }
   render(cx) {
     const t=theme(),shown=this.filtered(),g=groups(shown),selected=this.selected(),unread=this.rows.filter(r=>!r.state.read_at).length;
@@ -291,21 +307,17 @@ export default class Trough extends View {
           .child(this.button('handler-off','Turn off',cx=>this.handlerDecision('off',cx),t)))))
       .when(this.search||this.input.value(),el=>el.child(h_flex().h(27).bg(t.background).rounded(5).px(6).child(Input.new(this.input).flex_1().min_w(0).text_size(12).text_color(t.foreground))));
     const latest=this.receipts.find(r=>r.story_id===selected?.story.id);
+    // Actions that belong to no link; the others sit under their link.
+    const loose=selected&&[...(selected.story.actions??[]).filter(action=>!actionLink(action,selected.story)),...(selected.offers??[]).filter(offer=>!offer.link)];
     const detail=selected&&this.detail?v_flex().px(12).py(10).gap(8).bg(t.background).border_t(1).border_color(t.border)
-      .child(h_flex().justify_between().child(div().font_semibold().text_color(t.foreground).child(selected.story.title))
-        .child(this.button('detail-close','×',cx=>{this.detail=false;cx.notify();},t)))
+      .child(h_flex().items_start().gap(6).child(div().flex_1().min_w(0).font_semibold().text_color(t.foreground).child(selected.story.title))
+        .child(this.button('detail-close','×',cx=>{this.detail=false;cx.notify();},t).flex_none()))
       .child(div().text_size(11).text_color(t.muted).child(`${severityLabel(selected.story.severity)} · ${selected.story.source.label} · ${localTime(selected.story.occurred_at)} · ${selected.story.id}`))
       .child(this.detailText(selected.story.summary,12,t.foreground,t))
       .when(Boolean(selected.story.decision),el=>el.child(this.detailText(selected.story.decision.prompt,12,t.accent,t)))
-      .children((selected.story.links??[]).map(l=>this.detailLink(l,t)))
+      .children((selected.story.links??[]).map(l=>this.detailLink(selected,l,t)))
       .when(Boolean(latest),el=>el.child(div().text_size(11).text_color(latest.outcome==='failed'?t.blocked:t.muted).child(`Last action: ${latest.outcome}${latest.result?` · ${latest.result}`:''}`)))
-      .when(Boolean(selected.story.actions?.length),el=>el.child(h_flex().flex_wrap().gap(5).children(selected.story.actions.map(a=>this.actionBlocked(selected,a)?this.disabledButton(`action-${a.id}`,a.label,t):this.button(`action-${a.id}`,a.label,cx=>{
-        this.review=null;
-        if(a.handler==='answer_decision'||a.choice){this.pick=a;cx.notify();} else this.actionReview(a,cx);
-      },t))))
-        .children(selected.story.actions.filter(a=>this.actionBlocked(selected,a)).map(a=>div().text_size(10).text_color(t.dim).child(`${a.label} is unavailable: ${this.actionBlocked(selected,a)}`))))
-      .when((selected.offers??[]).some(offer=>!offer.link),el=>el.child(h_flex().flex_wrap().gap(5).children(selected.offers.filter(offer=>!offer.link).map(offer=>this.offerButton(offer,t))))
-        .children(selected.offers.filter(offer=>!offer.link&&!offer.available).map(offer=>div().text_size(10).text_color(t.dim).child(`${offer.label} is unavailable: ${offer.reason}`))))
+      .when(Boolean(loose?.length),el=>el.child(this.actionRow(selected,loose,t)))
       .when(Boolean(this.pick&&selected.story.decision),el=>el.child(v_flex().gap(4)
         .child(div().text_color(t.muted).child('Choose an answer to review:'))
         .when(Boolean(selected.story.decision.allow_comment),el=>el.child(h_flex().h(27).bg(t.surface).rounded(5).px(6).child(Input.new(this.commentInput).flex_1().min_w(0).text_size(12).text_color(t.foreground))))

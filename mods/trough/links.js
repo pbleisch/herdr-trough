@@ -62,3 +62,9 @@ export function splitDetailLinks(text) {
   });
 }
 
+
+// The link a story-declared action targets: its `link` argument, when that names one of the story's links.
+export function actionLink(action, story) {
+  const id = action.args?.link;
+  return typeof id === 'string' && (story.links ?? []).some(link => link.id === id) ? id : null;
+}
