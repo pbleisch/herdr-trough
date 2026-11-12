@@ -3,12 +3,13 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { rootDir, post, ingest, stored, setState, list, rejections } from '../core/store.js';
 import { parseJson, validateStory } from '../core/schema.js';
-import { review, runReviewed, receipts, openLocalPath } from '../core/actions.js';
+import { review, runReviewed, receipts, openLocalPath, listActions, actionStatus } from '../core/actions.js';
+import { listPacks, checkPacks, addPack, removePack } from '../core/packages.js';
 import { listProducers, runProducer } from '../core/producers.js';
 import { prune, deleteStory } from '../core/prune.js';
 import { visible } from '../feed.js';
 
-const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN | open STORY PATH | receipts [STORY] | producers | produce ID\nGlobal: --dir DIR (or TROUGH_DIR). --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
+const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN | open STORY PATH | receipts [STORY] | producers | produce ID | packages [list|check] [--json] | packages add PATH [--options-file FILE] | packages remove NAME|PATH | actions [--json]\nGlobal: --dir DIR (or TROUGH_DIR). --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
 function parse(argv) {
   const positional=[],opts={};
   for (let i=0;i<argv.length;i++) {
@@ -16,7 +17,7 @@ function parse(argv) {
     if (!x.startsWith('--')) { positional.push(x); continue; }
     const k=x.slice(2);
     if (['json','inbox','unread','needs-action','done','snoozed','all','dry-run'].includes(k)) { opts[k]=true; continue; }
-    if (!['dir','file','source','kind','title','summary','severity','subject','search','group-key','link','until','option','comment','older-than'].includes(k) || i+1>=argv.length) throw new Error(`unknown or incomplete option: ${x}`);
+    if (!['options-file','dir','file','source','kind','title','summary','severity','subject','search','group-key','link','until','option','comment','older-than'].includes(k) || i+1>=argv.length) throw new Error(`unknown or incomplete option: ${x}`);
     if (k==='link') (opts.link??=[]).push(argv[++i]);
     else if (['source','kind','severity','subject'].includes(k) && positional[0]==='ls') (opts[k]??=[]).push(argv[++i]);
     else { if (opts[k]!==undefined) throw new Error(`duplicate option: ${x}`); opts[k]=argv[++i]; }
@@ -52,7 +53,34 @@ async function main() {
   if (command==='run') { if (!id||rest.length) throw new Error('run needs a review token'); output(await runReviewed(root,id)); return; }
   if (command==='open') { if (!id||rest.length!==1) throw new Error('open needs STORY and PATH'); output(await openLocalPath(root,id,rest[0])); return; }
   if (command==='receipts') { if(rest.length) throw new Error('receipts accepts at most one story ID'); output(await receipts(root,id)); return; }
-  if (command==='ls') { const rows=visible(await list(root),lsFilters(opts)); if (opts.json) output(rows); else for (const r of rows) output(`${r.story.id}\t${r.story.severity}\t${r.story.source.label}\t${r.story.title}`); return; }
+  if (command==='packages') {
+    const sub=id??'list';
+    if (sub==='add') { if(rest.length!==1) throw new Error('packages add needs one PATH'); output(await addPack(root,rest[0],opts['options-file']?JSON.parse(await fs.readFile(opts['options-file'],'utf8')):undefined)); return; }
+    if (sub==='remove') { if(rest.length!==1) throw new Error('packages remove needs one NAME or PATH'); output(await removePack(root,rest[0])); return; }
+    if (!['list','check'].includes(sub)||rest.length) throw new Error('packages takes list, check, add PATH, or remove NAME|PATH');
+    const packs=await listPacks(root),ok=packs.every(pack=>pack.ok);
+    if (opts.json) output(sub==='check'?{ok,packs}:packs);
+    else {
+      if (!packs.length) output('No packs are listed in handlers.json.');
+      for (const pack of packs) {
+        output(`${pack.name}\t${pack.ok?'ok':'error'}\t${pack.path}`);
+        for (const problem of pack.problems) output(`  problem: ${problem}`);
+        output(`  handlers: ${pack.handlers.length?pack.handlers.map(h=>h.available?h.id:`${h.id} (unavailable: ${h.reason})`).join(', '):'none'}`);
+        output(`  producer: ${pack.producer?`${pack.producer.name}, every ${pack.producer.interval_seconds}s, ${pack.producer.last_run?`last run ${pack.producer.last_run}`:'not run yet'}${pack.producer.last_error?`, last error: ${pack.producer.last_error}`:''}`:'none'}`);
+      }
+      if (sub==='check') output(ok?'check passed':'check failed');
+    }
+    if (sub==='check'&&!ok) process.exitCode=1;
+    return;
+  }
+  if (command==='actions') {
+    if(id) throw new Error('actions takes no ID');
+    const actions=await listActions(root);
+    if (opts.json) output(actions);
+    else for (const a of actions) output(`${a.id}\t${a.origin==='pack'?`pack ${a.pack}`:a.origin}\t${a.available?'available':`unavailable: ${a.reason}`}\t${Object.entries(a.args).map(([k,rule])=>`${k}${rule.required?'':'?'}:${rule.type}`).join(' ')||'-'}`);
+    return;
+  }
+  if (command==='ls') { let rows=visible(await list(root),lsFilters(opts)); if (opts.json) output(await actionStatus(root,rows)); else for (const r of rows) output(`${r.story.id}\t${r.story.severity}\t${r.story.source.label}\t${r.story.title}`); return; }
   if (command==='show') { if (!id) throw new Error('story ID required'); await ingest(root); const row=await stored(root,id); output({story:row.story,story_hash:row.hash,received_at:row.received_at}); return; }
   if (['read','unread','done','undo','snooze'].includes(command)) { if (!id) throw new Error('story ID required'); output(await setState(root,id,command,opts.until)); return; }
   throw new Error(`unknown command: ${command}\n${usage}`);

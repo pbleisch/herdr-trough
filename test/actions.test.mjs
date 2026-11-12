@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { post, stored } from '../mods/trough/core/store.js';
-import { review, runReviewed, receipts } from '../mods/trough/core/actions.js';
+import { post, stored, list } from '../mods/trough/core/store.js';
+import { review, runReviewed, receipts, actionStatus, listActions } from '../mods/trough/core/actions.js';
 
 const root=()=>fs.mkdtemp(path.join(os.tmpdir(),'trough-actions-'));
 const base=(id=crypto.randomBytes(16).toString('hex'))=>({v:1,id,source:{id:'example',label:'Example'},kind:'report',title:'Result',summary:'Ready',occurred_at:'2026-11-11T18:00:00Z',severity:'notice'});
@@ -103,18 +103,44 @@ test('CLI review and run are separate operations with a receipt',async()=>{
   assert.equal((await receipts(dir,s.id)).length,1);
 });
 
-test('reading-list handoff is unavailable without rl and plans separate argv when installed',async()=>{
-  const dir=await root(),s={...base(),links:[{id:'result',label:'Result',url:'https://example.com/result'}],actions:[{id:'save',label:'Save',handler:'add_to_reading_list',args:{link:'result',note:'Read this'}}]};
+test('an action with no installed handler is reported unavailable instead of failing on click',async()=>{
+  const dir=await root(),s={...base(),links:[{id:'result',label:'Result',url:'https://example.com/result'}],actions:[
+    {id:'save',label:'Save',handler:'add_to_reading_list',args:{link:'result'}},
+    {id:'gone',label:'Gone',handler:'gone'},
+    {id:'ok',label:'Ok',handler:'ok'}]};
   await add(dir,s);
-  const old=process.env.PATH;
-  try {
-    process.env.PATH='';
-    await assert.rejects(review(dir,s.id,'save'),/rl is unavailable/);
-    const tools=path.join(dir,'tools'); await fs.mkdir(tools);
-    const fake=path.join(tools,'rl'); await fs.writeFile(fake,'#!/bin/sh\nexit 0\n',{mode:0o755});
-    process.env.PATH=tools;
-    const sheet=await review(dir,s.id,'save');
-    assert.deepEqual(sheet.plan.argv,['add','https://example.com/result','--from','Trough','--if-new','--note','Read this']);
-    assert.equal((await runReviewed(dir,sheet.token)).outcome,'succeeded');
-  } finally {process.env.PATH=old;}
+  await config(dir,{handlers:{
+    gone:{kind:'command',executable:path.join(dir,'missing-tool'),argv:[],args:{},effects:['Run a missing tool']},
+    ok:{kind:'command',executable:process.execPath,argv:[{literal:'--version'}],args:{},effects:['Print the Node.js version']}}});
+  const [row]=await actionStatus(dir,await list(dir));
+  assert.deepEqual(row.action_status.save,{available:false,reason:'handler add_to_reading_list is not installed'});
+  assert.match(row.action_status.gone.reason,/missing-tool is missing or not executable/);
+  assert.deepEqual(row.action_status.ok,{available:true});
+  await assert.rejects(review(dir,s.id,'save'),/handler add_to_reading_list is not installed/);
+  await assert.rejects(review(dir,s.id,'gone'),/is unavailable: .*missing-tool/);
+  const shown=JSON.parse(spawnSync(process.execPath,[path.resolve('mods/trough/bin/trough'),'--dir',dir,'ls','--all','--json'],{encoding:'utf8'}).stdout);
+  assert.equal(shown[0].action_status.save.available,false);
+});
+
+test('a decision answer is unavailable until its route is bound, and a broken pack is named in the reason',async()=>{
+  const dir=await root();
+  const d={...base(),kind:'decision',decision:{question_id:'q',prompt:'Proceed?',options:[{id:'yes',label:'Yes',answer_text:'Proceed'},{id:'no',label:'No',answer_text:'Stop'}]},actions:[{id:'answer',label:'Answer',handler:'answer_decision'},{id:'x',label:'X',handler:'from_pack'}]};
+  await add(dir,d);
+  await config(dir,{packages:[path.join(dir,'absent','index.js')]});
+  let [row]=await actionStatus(dir,await list(dir));
+  assert.equal(row.action_status.answer.reason,'no trusted answer route is bound to this story');
+  assert.match(row.action_status.x.reason,/^handler from_pack is not installed; pack absent failed to load: /);
+  await config(dir,{answer_routes:{[d.id]:{source_id:'example',story_hash:row.story_hash}}});
+  [row]=await actionStatus(dir,await list(dir));
+  assert.deepEqual(row.action_status.answer,{available:true});
+});
+
+test('listed built-in actions state their arguments and platform availability',async()=>{
+  const dir=await root(),actions=await listActions(dir);
+  assert.deepEqual(actions.map(a=>a.id),['answer_decision','open_file','open_path','open_url']);
+  const open=actions.find(a=>a.id==='open_url');
+  assert.equal(open.origin,'built-in');
+  assert.deepEqual(open.args,{link:{type:'string',required:true,max_length:64}});
+  assert.equal(open.available,process.platform==='darwin');
+  if(!open.available) assert.match(open.reason,/macOS only/);
 });

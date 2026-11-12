@@ -6,7 +6,7 @@ import { loadConfig } from './actions.js';
 import { replaceAtomic } from './store.js';
 
 const plain=value=>value&&typeof value==='object'&&!Array.isArray(value);
-const key=file=>crypto.createHash('sha256').update(file).digest('hex').slice(0,24);
+export const producerId=file=>crypto.createHash('sha256').update(file).digest('hex').slice(0,24);
 const statusDir=root=>path.join(root,'producers');
 
 export async function configuredProducers(root) {
@@ -16,7 +16,7 @@ export async function configuredProducers(root) {
     const file=typeof entry==='string'?entry:entry?.path;
     const options=typeof entry==='string'?{}:entry?.options??{};
     if(typeof file!=='string'||!path.isAbsolute(file)||!plain(options)) throw new Error('invalid producer package configuration');
-    const id=key(file);
+    const id=producerId(file);
     if(seen.has(id)) throw new Error(`duplicate producer package: ${file}`);
     seen.add(id);
     try {

@@ -23,14 +23,6 @@ const linkFor=(story,args,want)=>{
   if(want==='url'&&!l.url || want==='path'&&!l.path) fail(`action requires a ${want} link`);
   return l;
 };
-async function executable(name) {
-  for(const dir of (process.env.PATH??'').split(path.delimiter)) {
-    if(!dir) continue;
-    const file=path.join(dir,name);
-    try { await fs.access(file,constants.X_OK); return file; } catch {}
-  }
-  return null;
-}
 const commandPlan=(command,argv,description)=>({command,argv,effects:[description,`Run ${JSON.stringify([command,...argv])}`]});
 const RUNS=new Set(['app','command','tool','terminal','workflow','action','pkg','mpkg','dmg','jar','scpt','scptd','applescript','osax','prefpane','saver','kext','plugin','bundle','framework','xpc','appex','webloc','inetloc','fileloc','afploc','ftploc','url','mobileconfig','configprofile','sh','bash','zsh','csh','tcsh','ksh','fish','py','pyw','rb','pl','php','lua','tcl','ps1','bat','cmd','exe','msi','vbs','scr']);
 const extension=file=>path.extname(file).slice(1).toLowerCase();
@@ -45,12 +37,19 @@ async function localOpenPlan(target) {
   const c=couldRun?macos.revealPath(file):macos.openPath(file);
   return commandPlan(c[0],c.slice(1),`${couldRun?'Reveal':'Open'} path ${file}${couldRun?' in Finder':''}`);
 }
+const linkArg={link:{type:'string',required:true,max_length:64}};
+const BUILT_INS={
+  open_url:{args:linkArg,effects:['Open the linked URL in the default browser'],platform:'darwin'},
+  open_path:{args:linkArg,effects:['Reveal the linked path in Finder'],platform:'darwin'},
+  open_file:{args:linkArg,effects:['Open the linked file or folder, or reveal it in Finder if it could run'],platform:'darwin'},
+  answer_decision:{args:{},effects:['Write an immutable answer under answers/<source-id>/']}
+};
+const builtInReason=id=>BUILT_INS[id].platform&&BUILT_INS[id].platform!==process.platform?`${id} is currently available on macOS only`:null;
 async function builtInPlan(id,story,args,context) {
-  if(['open_url','open_path','open_file'].includes(id) && process.platform!=='darwin') fail(`${id} is currently available on macOS only`);
+  if(BUILT_INS[id]&&builtInReason(id)) fail(builtInReason(id));
   if(id==='open_url') { exactKeys(args,['link'],'open_url'); const l=linkFor(story,args,'url'); const c=macos.openUrl(l.url); return commandPlan(c[0],c.slice(1),`Open URL ${l.url}`); }
   if(id==='open_path') { exactKeys(args,['link'],'open_path'); const l=linkFor(story,args,'path'); const c=macos.revealPath(l.path); return commandPlan(c[0],c.slice(1),`Reveal path ${l.path} in Finder`); }
   if(id==='open_file') { exactKeys(args,context.inlinePath?['path']:['link'],'open_file'); const target=context.inlinePath?args.path:linkFor(story,args,'path').path; return localOpenPlan(target); }
-  if(id==='add_to_reading_list') { exactKeys(args,['link','note'],'add_to_reading_list'); const l=linkFor(story,args); if(args.note!==undefined&&(typeof args.note!=='string'||args.note.length>1024)) fail('note must be at most 1024 characters'); const rl=await executable('rl'); if(!rl) fail('rl is unavailable'); const target=l.url??l.path; const argv=['add',target,'--from','Trough','--if-new']; if(args.note) argv.push('--note',args.note); return commandPlan(rl,argv,`Add ${target} to reading list${args.note?` with note: ${args.note}`:''}`); }
   if(id==='answer_decision') {
     exactKeys(args,[],'answer_decision');
     const d=story.decision; if(!d) fail('story has no decision');
@@ -76,28 +75,99 @@ function validateArgs(args,schema) {
     if(rule.enum&&!rule.enum.includes(args[k])) fail(`${k} outside allowed values`);
   }
 }
+export function validateConfig(raw) {
+  if(!plain(raw)||raw.v!==1||!plain(raw.handlers??{})||!Array.isArray(raw.packages??[])||!plain(raw.answer_routes??{})) fail('invalid handlers.json');
+  for(const [storyId,route] of Object.entries(raw.answer_routes??{})) if(!/^[0-9a-f]{32}$|^[0-9A-HJKMNP-TV-Z]{26}$/.test(storyId)||!plain(route)||!KEY.test(route.source_id)||!/^[0-9a-f]{64}$/.test(route.story_hash)) fail('invalid answer route');
+  return raw;
+}
 export async function loadConfig(root) {
   let raw;
   try { raw=JSON.parse(await fs.readFile(path.join(root,'handlers.json'),'utf8')); }
   catch(e) { if(e.code==='ENOENT') return {v:1,handlers:{},answer_routes:{},packages:[]}; throw e; }
-  if(!plain(raw)||raw.v!==1||!plain(raw.handlers??{})||!Array.isArray(raw.packages??[])||!plain(raw.answer_routes??{})) fail('invalid handlers.json');
-  for(const [storyId,route] of Object.entries(raw.answer_routes??{})) if(!/^[0-9a-f]{32}$|^[0-9A-HJKMNP-TV-Z]{26}$/.test(storyId)||!plain(route)||!KEY.test(route.source_id)||!/^[0-9a-f]{64}$/.test(route.story_hash)) fail('invalid answer route');
+  validateConfig(raw);
   return {v:1,handlers:raw.handlers??{},answer_routes:raw.answer_routes??{},packages:raw.packages??[]};
 }
-async function registry(root) {
-  const config=await loadConfig(root), packages={};
-  for(const entry of config.packages) {
-    const file=typeof entry==='string'?entry:entry?.path;
-    const options=typeof entry==='string'?{}:entry?.options??{};
+const brief=error=>String(error?.message??error).slice(0,500);
+export const packEntry=entry=>({file:typeof entry==='string'?entry:entry?.path,options:typeof entry==='string'?{}:entry?.options??{}});
+// A pack is named by its `name` export, or by its folder (for index.js) or file name.
+export function packName(file,module) {
+  if(typeof module?.name==='string'&&KEY.test(module.name)) return module.name;
+  const stem=path.basename(file,path.extname(file));
+  return stem==='index'?path.basename(path.dirname(file)):stem;
+}
+// Loads one configured pack. A pack that cannot load reports `error` and contributes nothing.
+export async function loadPack(entry) {
+  const {file,options}=packEntry(entry);
+  const pack={path:file,name:typeof file==='string'?packName(file):'(invalid)',options,module:null,handlers:{}};
+  try {
     if(typeof file!=='string'||!path.isAbsolute(file)) fail('package path must be absolute');
     if(!plain(options)) fail('package options must be an object');
-    const module=await import(pathToFileURL(file).href);
-    if(typeof module.handlers!=='function'&&typeof module.producer!=='function') fail(`package ${file} must export handlers() or producer()`);
-    const entries=module.handlers?await module.handlers(options):{};
-    if(!plain(entries)) fail(`package ${file} returned no handlers`);
-    Object.assign(packages,entries);
+    pack.module=await import(pathToFileURL(file).href);
+    pack.name=packName(file,pack.module);
+    if(typeof pack.module.handlers!=='function'&&typeof pack.module.producer!=='function') fail('package must export handlers() or producer()');
+    const entries=pack.module.handlers?await pack.module.handlers(options):{};
+    if(!plain(entries)) fail('handlers() must return an object keyed by handler ID');
+    for(const id of Object.keys(entries)) if(!KEY.test(id)) fail(`invalid handler ID ${id}`);
+    pack.handlers=entries;
+  } catch(error) { pack.error=brief(error); }
+  return pack;
+}
+async function handlerState(origin,id,def) {
+  try {
+    if(origin==='config') {
+      if(!plain(def)||def.kind!=='command'||typeof def.executable!=='string'||!path.isAbsolute(def.executable)) return 'invalid command handler definition';
+      try { await fs.access(def.executable,constants.X_OK); } catch { return `${def.executable} is missing or not executable`; }
+      return null;
+    }
+    if(origin==='built-in') return builtInReason(id);
+    if(!plain(def)||typeof def.plan!=='function'||typeof def.run!=='function'||!Array.isArray(def.effects)) return 'invalid integration handler';
+    if(def.unavailable===undefined) return null;
+    if(typeof def.unavailable!=='function') return 'invalid integration handler';
+    const reason=await def.unavailable();
+    return reason?String(reason).slice(0,300):null;
+  } catch(error) { return brief(error); }
+}
+// The installed action handlers. Operator `handlers` win over packs, packs win over built-ins,
+// and a later pack wins over an earlier one.
+export async function handlerCatalog(root) {
+  const config=await loadConfig(root),packs=[],handlers=new Map();
+  const put=async(id,origin,def,pack)=>{
+    const reason=await handlerState(origin,id,def);
+    handlers.set(id,{id,origin,...(pack?{pack:pack.name,path:pack.path}:{}),args:plain(def?.args)?def.args:{},effects:Array.isArray(def?.effects)?def.effects:[],available:!reason,...(reason?{reason}:{}),def});
+  };
+  for(const [id,def] of Object.entries(BUILT_INS)) await put(id,'built-in',def);
+  for(const entry of config.packages) {
+    const pack=await loadPack(entry); packs.push(pack);
+    for(const [id,def] of Object.entries(pack.handlers)) await put(id,'pack',def,pack);
   }
-  return {config,packages};
+  for(const [id,def] of Object.entries(config.handlers)) await put(id,'config',def);
+  return {config,packs,handlers};
+}
+const missingReason=(catalog,id)=>{
+  const broken=catalog.packs.filter(pack=>pack.error).map(pack=>`pack ${pack.name} failed to load: ${pack.error}`);
+  return [`handler ${id} is not installed`,...broken].join('; ').slice(0,500);
+};
+export async function listActions(root) {
+  return [...(await handlerCatalog(root)).handlers.values()].map(({def,...shown})=>shown).sort((a,b)=>a.id.localeCompare(b.id));
+}
+// Per-story action availability, so a view can disable an action and say why before a click.
+export async function actionStatus(root,rows) {
+  if(!rows.some(row=>row.story.actions?.length)) return rows;
+  const catalog=await handlerCatalog(root);
+  return rows.map(row=>{
+    if(!row.story.actions?.length) return row;
+    const status={};
+    for(const action of row.story.actions) {
+      const entry=catalog.handlers.get(action.handler);
+      let reason=!entry?missingReason(catalog,action.handler):entry.available?null:entry.reason;
+      if(!reason&&entry.origin==='built-in'&&action.handler==='answer_decision') {
+        const route=catalog.config.answer_routes[row.story.id];
+        if(!route||route.story_hash!==row.story_hash||route.source_id!==row.story.source.id) reason='no trusted answer route is bound to this story';
+      }
+      status[action.id]=reason?{available:false,reason}:{available:true};
+    }
+    return {...row,action_status:status};
+  });
 }
 function configPlan(def,args) {
   if(!plain(def)||def.kind!=='command'||typeof def.executable!=='string'||!path.isAbsolute(def.executable)||!Array.isArray(def.argv)||!Array.isArray(def.effects)||!def.effects.length||!def.effects.every(x=>typeof x==='string'&&x.length&&x.length<=500)) fail('invalid command handler definition');
@@ -115,19 +185,22 @@ async function planFor(root,storyId,actionId,choice={}) {
   const inlinePath=actionId==='__open_local_path';
   if(inlinePath && (typeof choice.path!=='string'||![...(story.links??[]).map(l=>l.path),...splitDetailLinks(story.summary).map(p=>p.path),...splitDetailLinks(story.decision?.prompt??'').map(p=>p.path)].includes(choice.path))) fail('path is not present in this story');
   const action=inlinePath?{id:actionId,handler:'open_file',args:{path:choice.path}}:story.actions?.find(a=>a.id===actionId); if(!action) fail('action not found');
-  const {config,packages}=await registry(root);
   const args=action.args??{};
   let plan;
   if(inlinePath) plan=await builtInPlan(action.handler,story,args,{inlinePath:true});
-  else if(Object.hasOwn(config.handlers,action.handler)) plan=configPlan(config.handlers[action.handler],args);
-  else if(Object.hasOwn(packages,action.handler)) {
-    const h=packages[action.handler]; validateArgs(args,h.args??{});
-    if(typeof h.plan!=='function'||typeof h.run!=='function'||!Array.isArray(h.effects)) fail('invalid integration handler');
-    plan=await h.plan({story,action,args,root,choice});
-    if(!plain(plan)||!Array.isArray(plan.effects)||!plan.effects.every(x=>typeof x==='string')) fail('integration plan must declare exact effects');
-    plan={...plan,kind:'package',package_id:action.handler,declared_effects:h.effects};
-  } else plan=await builtInPlan(action.handler,story,args,{root,config,story_hash,option:choice.option,comment:choice.comment});
-  if(!plan) fail(`handler unavailable: ${action.handler}`);
+  else {
+    const catalog=await handlerCatalog(root),entry=catalog.handlers.get(action.handler);
+    if(!entry) fail(missingReason(catalog,action.handler));
+    if(!entry.available) fail(`handler ${action.handler} is unavailable: ${entry.reason}`);
+    if(entry.origin==='config') plan=configPlan(entry.def,args);
+    else if(entry.origin==='pack') {
+      const h=entry.def; validateArgs(args,h.args??{});
+      plan=await h.plan({story,action,args,root,choice});
+      if(!plain(plan)||!Array.isArray(plan.effects)||!plan.effects.every(x=>typeof x==='string')) fail('integration plan must declare exact effects');
+      plan={...plan,kind:'package',package_id:action.handler,declared_effects:h.effects};
+    } else plan=await builtInPlan(action.handler,story,args,{root,config:catalog.config,story_hash,option:choice.option,comment:choice.comment});
+  }
+  if(!plan) fail(`handler ${action.handler} is not installed`);
   return {story_id:storyId,action_id:actionId,handler:action.handler,source:story.source,story_hash,plan};
 }
 export async function openLocalPath(root,storyId,target) {
@@ -182,7 +255,9 @@ export async function runReviewed(root,token) {
   try {
     if(fresh.plan.kind==='answer') result=await executeAnswer(root,token,fresh);
     else if(fresh.plan.kind==='package') {
-      const {packages}=await registry(root); result=await packages[fresh.handler].run({root,reviewed:fresh,choice:record.choice,token});
+      const entry=(await handlerCatalog(root)).handlers.get(fresh.handler);
+      if(entry?.origin!=='pack'||!entry.available) fail(`handler ${fresh.handler} is no longer available`);
+      result=await entry.def.run({root,reviewed:fresh,choice:record.choice,token});
     } else {
       const r=spawnSync(fresh.plan.command,fresh.plan.argv,{encoding:'utf8',shell:false,timeout:30000,maxBuffer:65536});
       if(r.error) throw r.error;

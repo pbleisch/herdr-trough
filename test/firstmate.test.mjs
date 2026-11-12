@@ -320,3 +320,18 @@ test('trough-firstmate sync CLI reads the operator-listed home',async()=>{
   assert.equal(invalid.status,1);
   assert.match(invalid.stderr,/--backfill requires a valid date/);
 });
+
+test('finished report cards offer the reading-list action only when its handler is installed',async()=>{
+  const without=await setup();
+  await sync(without.root,{home:without.home,...options},{backfillSince:'2026-11-01'});
+  const plainReport=(await list(without.root)).find(row=>row.story.kind==='report').story;
+  assert.equal(plainReport.actions,undefined);
+  assert.equal(plainReport.summary,'Firstmate finished this report.');
+  const withPack=await setup();
+  const config=JSON.parse(await fs.readFile(path.join(withPack.root,'handlers.json'),'utf8'));
+  config.packages.push(path.join(project,'packages','reading-list','index.js'));
+  await fs.writeFile(path.join(withPack.root,'handlers.json'),JSON.stringify(config));
+  await sync(withPack.root,{home:withPack.home,...options},{backfillSince:'2026-11-01'});
+  const report=(await list(withPack.root)).find(row=>row.story.kind==='report').story;
+  assert.deepEqual(report.actions,[{id:'read_later',label:'Add to reading list',handler:'add_to_reading_list',args:{link:'report'}}]);
+});

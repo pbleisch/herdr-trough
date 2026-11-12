@@ -169,8 +169,11 @@ export default class Trough extends View {
     else if(k==='d') this.act(this.selected()?.state.done_at?'undo':'done',cx);
     else if(k==='shift-d') this.confirmDelete(cx);
     else if(k==='z') this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]);
-    else if(k==='a') {const action=this.selected()?.story.actions?.[0];if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
+    else if(k==='a') {const row=this.selected(),action=row?.story.actions?.find(item=>!this.actionBlocked(row,item));if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
   }
+  // The CLI reports why an action cannot run (handler not installed, tool missing); such an action is shown but cannot be clicked.
+  actionBlocked(row,action) { const status=row.action_status?.[action.id]; return status&&!status.available?status.reason||'unavailable':null; }
+  disabledButton(id,label,t) { return div().id(id).px(8).py(5).rounded(5).border(1).border_color(t.border).text_color(t.dim).child(label); }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
   detailText(text,size,color,t) {
     return h_flex().flex_wrap().text_size(size).text_color(color).children(splitDetailLinks(text).map(part=>{
@@ -239,10 +242,11 @@ export default class Trough extends View {
       .when(Boolean(selected.story.decision),el=>el.child(this.detailText(selected.story.decision.prompt,12,t.accent,t)))
       .children((selected.story.links??[]).map(l=>this.detailLink(l,t)))
       .when(Boolean(latest),el=>el.child(div().text_size(11).text_color(latest.outcome==='failed'?t.blocked:t.muted).child(`Last action: ${latest.outcome}${latest.result?` · ${latest.result}`:''}`)))
-      .when(Boolean(selected.story.actions?.length),el=>el.child(h_flex().gap(5).children(selected.story.actions.map(a=>this.button(`action-${a.id}`,a.label,cx=>{
+      .when(Boolean(selected.story.actions?.length),el=>el.child(h_flex().flex_wrap().gap(5).children(selected.story.actions.map(a=>this.actionBlocked(selected,a)?this.disabledButton(`action-${a.id}`,a.label,t):this.button(`action-${a.id}`,a.label,cx=>{
         this.review=null;
         if(a.handler==='answer_decision'||a.choice){this.pick=a;cx.notify();} else this.actionReview(a,cx);
-      },t)))))
+      },t))))
+        .children(selected.story.actions.filter(a=>this.actionBlocked(selected,a)).map(a=>div().text_size(10).text_color(t.dim).child(`${a.label} is unavailable: ${this.actionBlocked(selected,a)}`))))
       .when(Boolean(this.pick&&selected.story.decision),el=>el.child(v_flex().gap(4)
         .child(div().text_color(t.muted).child('Choose an answer to review:'))
         .when(Boolean(selected.story.decision.allow_comment),el=>el.child(h_flex().h(27).bg(t.surface).rounded(5).px(6).child(Input.new(this.commentInput).flex_1().min_w(0).text_size(12).text_color(t.foreground))))

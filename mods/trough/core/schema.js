@@ -97,7 +97,7 @@ export function validateStory(s, filename) {
     object(a,`actions[${i}]`,['id','label','handler'],['id','label','handler','args','choice']); key(a.id,`actions[${i}].id`); string(a.label,`actions[${i}].label`,1,120); key(a.handler,`actions[${i}].handler`);
     if(own(a,'choice') && typeof a.choice!=='boolean') fail(`actions[${i}].choice`,'expected boolean');
     if (own(a,'args')) { if (!a.args || typeof a.args !== 'object' || Array.isArray(a.args) || Object.keys(a.args).length > 12) fail(`actions[${i}].args`,'expected bounded object'); for (const [k,v] of Object.entries(a.args)) { key(k,`actions[${i}].args key`); if (typeof v === 'string') string(v,`actions[${i}].args.${k}`,0,8192); else if (typeof v !== 'boolean' && !(typeof v === 'number' && Number.isFinite(v))) fail(`actions[${i}].args.${k}`,'expected string, number or boolean'); } }
-    if (['open_url','open_path','open_file','add_to_reading_list'].includes(a.handler)) {
+    if (['open_url','open_path','open_file'].includes(a.handler)) {
       const link=links.find(l=>l.id===a.args?.link);
       if(!link) fail(`actions[${i}].args.link`,'must reference a declared link');
       if(a.handler==='open_url'&&!link.url || ['open_path','open_file'].includes(a.handler)&&!link.path) fail(`actions[${i}].args.link`,'wrong link destination type');
