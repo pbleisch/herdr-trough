@@ -25,7 +25,7 @@ export default class Trough extends View {
     });
     cx.timer.every(10000,cx=>this.reload(cx));
     cx.timer.every(15000,cx=>cx.notify());
-    this.producers=[]; this.producerHealth=new Map(); this.producerSetupError=null;
+    this.producers=[]; this.producerHealth=new Map(); this.producerSetupError=null; this.packs=[];
     cx.spawn(async cx=>{
       try {
         this.producers=JSON.parse(await this.call(['producers']));
@@ -72,7 +72,7 @@ export default class Trough extends View {
   }
   async reload(cx) {
     if(this.loading) return; this.loading=true;
-    try { this.rows=JSON.parse(await this.call(['ls','--all','--json'])); this.receipts=JSON.parse(await this.call(['receipts'])); this.rejected=JSON.parse(await this.call(['rejections'])).length; this.error=null; this.alignSelection(); }
+    try { this.rows=JSON.parse(await this.call(['ls','--all','--json'])); this.receipts=JSON.parse(await this.call(['receipts'])); this.rejected=JSON.parse(await this.call(['rejections'])).length; this.packs=JSON.parse(await this.call(['packages','list','--json'])); this.error=null; this.alignSelection(); }
     catch(e) { this.error=e.message; }
     finally { this.loading=false; cx.notify(); }
   }
@@ -169,10 +169,19 @@ export default class Trough extends View {
     else if(k==='d') this.act(this.selected()?.state.done_at?'undo':'done',cx);
     else if(k==='shift-d') this.confirmDelete(cx);
     else if(k==='z') this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]);
-    else if(k==='a') {const row=this.selected(),action=row?.story.actions?.find(item=>!this.actionBlocked(row,item));if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
+    else if(k==='a') {const row=this.selected(),action=row?.story.actions?.find(item=>!this.actionBlocked(row,item))??row?.offers?.find(item=>item.available);if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
   }
   // The CLI reports why an action cannot run (handler not installed, tool missing); such an action is shown but cannot be clicked.
   actionBlocked(row,action) { const status=row.action_status?.[action.id]; return status&&!status.available?status.reason||'unavailable':null; }
+  // Your own open handler changed or stopped passing its checks: it is not run until you decide.
+  handlerDecision(command,cx) {
+    cx.spawn(async cx=>{try {await this.call(['handler',command]); await this.reload(cx);} catch(e){this.error=e.message;cx.notify();}});
+  }
+  // An action a pack offers for this story (not declared by the story itself).
+  offerButton(offer,t) {
+    return offer.available?this.button(`offer-${offer.id}`,offer.label,cx=>{this.review=null;this.pick=null;this.actionReview(offer,cx);},t)
+      :this.disabledButton(`offer-${offer.id}`,offer.label,t);
+  }
   disabledButton(id,label,t) { return div().id(id).px(8).py(5).rounded(5).border(1).border_color(t.border).text_color(t.dim).child(label); }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
   detailText(text,size,color,t) {
@@ -187,8 +196,12 @@ export default class Trough extends View {
     const value=div().child(destination);
     if(link.path||isHttpUrl(destination)) value.text_color(t.accent).underline().cursor_pointer()
       .on_click((_e,cx)=>{cx.stop_propagation();if(link.path) this.openLocalPath(link.path,cx); else cx.open_url(destination);});
-    return h_flex().flex_wrap().text_size(11).text_color(t.muted)
-      .child(div().child(`${link.label}: `)).child(value);
+    const offers=(this.selected()?.offers??[]).filter(offer=>offer.link===link.id);
+    return v_flex().gap(3)
+      .child(h_flex().flex_wrap().text_size(11).text_color(t.muted)
+        .child(div().child(`${link.label}${link.role?` (${link.role})`:''}: `)).child(value))
+      .when(Boolean(offers.length),el=>el.child(h_flex().flex_wrap().gap(5).text_size(11).children(offers.map(offer=>this.offerButton(offer,t)))))
+      .children(offers.filter(offer=>!offer.available).map(offer=>div().text_size(10).text_color(t.dim).child(`${offer.label} is unavailable: ${offer.reason}`)));
   }
   render(cx) {
     const t=theme(),shown=this.filtered(),g=groups(shown),selected=this.selected(),unread=this.rows.filter(r=>!r.state.read_at).length;
@@ -203,7 +216,7 @@ export default class Trough extends View {
           .child(h_flex().gap(6).items_center().child(div().w(34).text_size(10).text_color(palette(s.severity,t)).child(severityLabel(s.severity)))
             .child(div().flex_1().truncate().font_semibold().text_color(st.read_at?t.muted:t.foreground).child(s.title))
             .child(div().text_size(10).text_color(t.dim).child(relativeTime(s.occurred_at))))
-          .child(div().text_size(11).text_color(t.muted).child(`${s.source.label} · ${s.kind}${s.outcome?` · ${s.outcome}`:''}${st.done_at?' · done':''}`))
+          .child(div().text_size(11).text_color(t.muted).child(`${s.source.label} · ${s.kind}${s.outcome?` · ${s.outcome}`:''}${st.done_at?' · done':''}${(row.badges??[]).map(badge=>` · ${badge.label}`).join('')}`))
           .child(div().text_size(11).text_color(t.muted).truncate().child(s.summary)));
       }
     }
@@ -232,6 +245,12 @@ export default class Trough extends View {
           const status=this.producerHealth.get(item.id);
           return `${item.name}: ${status?.last_run?`last ${relativeTime(status.last_run)}`:'waiting'}${status?.last_error?` · error: ${status.last_error}`:''}`;
         }).join('  ·  '))))
+      .children(this.packs.flatMap(pack=>pack.user_handler?.state==='stopped'?[]:pack.problems.map(problem=>div().text_size(10).text_color(t.blocked).child(`Pack ${pack.name}: ${problem}`))))
+      .children(this.packs.filter(pack=>pack.user_handler?.state==='stopped').map(pack=>v_flex().gap(4)
+        .child(div().text_size(10).text_color(t.blocked).child(`Your open handler is not used: ${pack.user_handler.why}`))
+        .child(h_flex().gap(5).text_size(11)
+          .child(this.button('handler-on','Use it',cx=>this.handlerDecision('on',cx),t))
+          .child(this.button('handler-off','Turn off',cx=>this.handlerDecision('off',cx),t)))))
       .when(this.search||this.input.value(),el=>el.child(h_flex().h(27).bg(t.background).rounded(5).px(6).child(Input.new(this.input).flex_1().min_w(0).text_size(12).text_color(t.foreground))));
     const latest=this.receipts.find(r=>r.story_id===selected?.story.id);
     const detail=selected&&this.detail?v_flex().px(12).py(10).gap(8).bg(t.background).border_t(1).border_color(t.border)
@@ -247,6 +266,8 @@ export default class Trough extends View {
         if(a.handler==='answer_decision'||a.choice){this.pick=a;cx.notify();} else this.actionReview(a,cx);
       },t))))
         .children(selected.story.actions.filter(a=>this.actionBlocked(selected,a)).map(a=>div().text_size(10).text_color(t.dim).child(`${a.label} is unavailable: ${this.actionBlocked(selected,a)}`))))
+      .when((selected.offers??[]).some(offer=>!offer.link),el=>el.child(h_flex().flex_wrap().gap(5).children(selected.offers.filter(offer=>!offer.link).map(offer=>this.offerButton(offer,t))))
+        .children(selected.offers.filter(offer=>!offer.link&&!offer.available).map(offer=>div().text_size(10).text_color(t.dim).child(`${offer.label} is unavailable: ${offer.reason}`))))
       .when(Boolean(this.pick&&selected.story.decision),el=>el.child(v_flex().gap(4)
         .child(div().text_color(t.muted).child('Choose an answer to review:'))
         .when(Boolean(selected.story.decision.allow_comment),el=>el.child(h_flex().h(27).bg(t.surface).rounded(5).px(6).child(Input.new(this.commentInput).flex_1().min_w(0).text_size(12).text_color(t.foreground))))
@@ -254,6 +275,7 @@ export default class Trough extends View {
       .when(Boolean(this.review),el=>el.child(v_flex().gap(5).p(10).rounded(6).border(1).border_color(t.accent).bg(t.raised)
         .child(div().font_semibold().text_color(t.foreground).child('Review action'))
         .child(div().text_size(11).text_color(t.muted).child(`Source claim: ${this.review.source.label} · ${this.review.source.id}`))
+        .child(div().text_size(11).text_color(t.muted).child(this.review.offered_by==='story'?'Action declared by the story':`Action offered by pack ${this.review.offered_by}${this.review.offer?`: ${this.review.offer.label}`:''}`))
         .children(this.review.plan.effects.map((effect,i)=>div().text_size(11).text_color(t.foreground).child(`${i+1}. ${effect}`)))
         .child(h_flex().gap(6)
           .child(this.button('confirm-action',this.running?'Running…':'Confirm action',cx=>this.runReview(cx),t,true))

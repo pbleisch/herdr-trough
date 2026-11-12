@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { list, post, setState, stored } from '../../mods/trough/core/store.js';
-import { handlerCatalog } from '../../mods/trough/core/actions.js';
 import { configuredHome, backlog, holdIdentity, integrationDir, iso, limited, sha, source, storyId, storyHash, writeJson } from './common.js';
 import { findNewRecord } from './index.js';
 
@@ -75,7 +74,7 @@ function mergeStory(home,rows,{task,when,url,title,detail,outcome='merged',autho
     severity:successful?'info':'warning',outcome:successful?'succeeded':'failed',group_key:`merge:${task}`,
     subject:{type:'task',key:clean(task,256)},
     provenance:{task_id:clean(task,128),event_id:clean(identity??(url?url:`${task}:local:${when}`),256)},
-    ...(url?{links:[{id:'change',label:'Pull request',url}]}:{})};
+    ...(url?{links:[{id:'change',label:'Pull request',url,role:'pr'}]}:{})};
 }
 function historySince(value) {
   if(typeof value!=='string'||!/^\d{4}-\d\d-\d\d(?:T\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d))?$/.test(value)) throw new Error('--backfill requires a date or RFC 3339 timestamp');
@@ -252,8 +251,9 @@ async function holdStories(home,root,options,rows) {
   return {stories,current};
 }
 
-// The reading-list action comes from a separate pack, so a report card offers it only when that handler is installed.
-async function reportStories(home,rows,readingList) {
+// The link's role and media type let packs offer fitting actions, such as adding the report to a reading list.
+const MEDIA={'.md':'text/markdown','.markdown':'text/markdown','.txt':'text/plain','.html':'text/html','.htm':'text/html','.pdf':'application/pdf','.json':'application/json'};
+async function reportStories(home,rows) {
   const stories=[];
   for(const row of rows) {
     if(row?.state!=='done'||!row?.structured) continue;
@@ -266,11 +266,10 @@ async function reportStories(home,rows,readingList) {
     const identity=`${row.id}:${suggested}:${row.completion?.date??''}`;
     const date=atDate(row.completion?.date)??stat.mtime.toISOString();
     stories.push({...base(home,'report',identity,date),kind:'report',title:clean(row.title||`Finished report: ${row.id}`,200),
-      summary:`Firstmate finished this report.${readingList?' The report can be added to the reading list.':''}`,outcome:'succeeded',
+      summary:'Firstmate finished this report.',outcome:'succeeded',
       group_key:`report:${row.id}`,subject:{type:'task',key:clean(row.id,256)},
       provenance:{task_id:clean(row.id,128),event_id:identity},
-      links:[{id:'report',label:'Finished report',path:suggested}],
-      ...(readingList?{actions:[{id:'read_later',label:'Add to reading list',handler:'add_to_reading_list',args:{link:'report'}}]}:{})});
+      links:[{id:'report',label:'Finished report',path:suggested,role:'report',...(MEDIA[path.extname(suggested).toLowerCase()]?{media_type:MEDIA[path.extname(suggested).toLowerCase()]}:{})}]});
   }
   return stories;
 }
@@ -373,7 +372,7 @@ export async function sync(root,options,{backfillSince}={}) {
     const representedUrls=new Set([...merges.stories,...existing.map(entry=>entry.story)]
       .filter(story=>['merge','decision'].includes(story.kind)||story.kind==='agent'&&story.severity==='info')
       .flatMap(story=>story.links?.map(link=>canonicalSubjectUrl(link.url)).filter(Boolean)??[]));
-    const allHistory=[...merges.stories,...await branchStories(home,represented,representedUrls),...await reportStories(home,rows,(await handlerCatalog(root)).handlers.has('add_to_reading_list'))];
+    const allHistory=[...merges.stories,...await branchStories(home,represented,representedUrls),...await reportStories(home,rows)];
     const baselineIds=firstSync?allHistory.map(story=>story.id):state.baseline_ids??[];
     const historicalIds=new Set(baselineIds);
     const history=allHistory.filter(story=>backfillAt===null?

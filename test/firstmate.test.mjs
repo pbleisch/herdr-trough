@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { post, list } from '../mods/trough/core/store.js';
-import { review, runReviewed } from '../mods/trough/core/actions.js';
+import { review, runReviewed, annotate } from '../mods/trough/core/actions.js';
+
+process.env.HERDR_APP_HOME=await fs.mkdtemp(path.join(os.tmpdir(),'trough-home-'));
 import { sync } from '../packages/firstmate/sync.js';
 
 const project=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
@@ -321,17 +323,16 @@ test('trough-firstmate sync CLI reads the operator-listed home',async()=>{
   assert.match(invalid.stderr,/--backfill requires a valid date/);
 });
 
-test('finished report cards offer the reading-list action only when its handler is installed',async()=>{
-  const without=await setup();
-  await sync(without.root,{home:without.home,...options},{backfillSince:'2026-11-01'});
-  const plainReport=(await list(without.root)).find(row=>row.story.kind==='report').story;
-  assert.equal(plainReport.actions,undefined);
-  assert.equal(plainReport.summary,'Firstmate finished this report.');
-  const withPack=await setup();
-  const config=JSON.parse(await fs.readFile(path.join(withPack.root,'handlers.json'),'utf8'));
+test('report and pull request links carry roles, and packs offer the link actions',async()=>{
+  const {root,home}=await setup();
+  const config=JSON.parse(await fs.readFile(path.join(root,'handlers.json'),'utf8'));
   config.packages.push(path.join(project,'packages','reading-list','index.js'));
-  await fs.writeFile(path.join(withPack.root,'handlers.json'),JSON.stringify(config));
-  await sync(withPack.root,{home:withPack.home,...options},{backfillSince:'2026-11-01'});
-  const report=(await list(withPack.root)).find(row=>row.story.kind==='report').story;
-  assert.deepEqual(report.actions,[{id:'read_later',label:'Add to reading list',handler:'add_to_reading_list',args:{link:'report'}}]);
+  await fs.writeFile(path.join(root,'handlers.json'),JSON.stringify(config));
+  await sync(root,{home,...options},{backfillSince:'2026-11-01'});
+  const rows=await annotate(root,await list(root)),report=rows.find(row=>row.story.kind==='report');
+  assert.equal(report.story.actions,undefined);
+  assert.equal(report.story.summary,'Firstmate finished this report.');
+  assert.deepEqual(report.story.links,[{id:'report',label:'Finished report',path:path.join(home,'data','report-one','report.md'),role:'report',media_type:'text/markdown'}]);
+  assert.deepEqual(report.offers.map(o=>o.id),['core.open.report','core.reveal.report','reading-list.add.report']);
+  assert.ok(rows.filter(row=>row.story.kind==='merge'&&row.story.links).every(row=>row.story.links[0].role==='pr'));
 });

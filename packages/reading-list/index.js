@@ -6,6 +6,21 @@ import { constants } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 export const name='reading-list';
+export const rules=['Link with role report or document, or a text, HTML or PDF media type: Add to reading list (add_to_reading_list). Set the roles with the `roles` option.'];
+const ROLES=['report','document'];
+const READABLE=/^(?:text\/|application\/pdf$)/;
+const rolesFrom=options=>{
+  const roles=options?.roles??ROLES;
+  if(!Array.isArray(roles)||!roles.every(role=>typeof role==='string')) throw new Error('reading-list option roles must be an array of link roles');
+  return roles;
+};
+
+// Offers the action on links worth reading later. A story that already declares it is left alone.
+export function augment(story,{options}) {
+  const roles=rolesFrom(options),declared=new Set((story.actions??[]).filter(a=>a.handler==='add_to_reading_list').map(a=>a.args?.link));
+  return {actions:(story.links??[]).filter(link=>!declared.has(link.id)&&(roles.includes(link.role)||READABLE.test(link.media_type??'')))
+    .map(link=>({id:`add.${link.id}`,label:'Add to reading list',handler:'add_to_reading_list',args:{link:link.id},link:link.id}))};
+}
 
 async function runnable(file) {
   try { await fs.access(file,constants.X_OK); return (await fs.stat(file)).isFile(); } catch { return false; }
@@ -23,6 +38,7 @@ async function findRl(options) {
 
 export function handlers(options={}) {
   if(options.rl!==undefined&&(typeof options.rl!=='string'||!path.isAbsolute(options.rl))) throw new Error('reading-list option rl must be an absolute path');
+  rolesFrom(options);
   return {
     add_to_reading_list:{
       args:{link:{type:'string',required:true,max_length:64},note:{type:'string',max_length:1024}},

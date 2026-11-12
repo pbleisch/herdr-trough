@@ -57,10 +57,14 @@
     "label": {"type": "string", "minLength": 1, "maxLength": 128},
     "urlLink": {"type": "object", "additionalProperties": false, "required": ["id", "label", "url"], "properties": {
       "id": {"$ref": "#/$defs/key"}, "label": {"type": "string", "minLength": 1, "maxLength": 120},
-      "url": {"type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 2048}}},
+      "url": {"type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 2048},
+      "role": {"$ref": "#/$defs/linkRole"}, "media_type": {"$ref": "#/$defs/mediaType"}}},
     "pathLink": {"type": "object", "additionalProperties": false, "required": ["id", "label", "path"], "properties": {
       "id": {"$ref": "#/$defs/key"}, "label": {"type": "string", "minLength": 1, "maxLength": 120},
-      "path": {"type": "string", "minLength": 1, "maxLength": 4096}}},
+      "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+      "role": {"$ref": "#/$defs/linkRole"}, "media_type": {"$ref": "#/$defs/mediaType"}}},
+    "linkRole": {"$ref": "#/$defs/key", "description": "What the link is, so packs can offer fitting actions. Conventional values: report, document, artifact, log, screenshot, pr, issue, source. Other keys are allowed."},
+    "mediaType": {"type": "string", "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$", "description": "Lowercase media type of the destination, such as text/markdown or application/pdf."},
     "action": {"type": "object", "additionalProperties": false, "required": ["id", "label", "handler"], "properties": {
       "id": {"$ref": "#/$defs/key"}, "label": {"type": "string", "minLength": 1, "maxLength": 120},
       "handler": {"$ref": "#/$defs/key"}, "choice": {"type": "boolean"},

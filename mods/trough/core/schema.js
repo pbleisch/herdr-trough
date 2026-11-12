@@ -1,5 +1,6 @@
 export const ID = /^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9a-f]{32})$/;
 export const KEY = /^[a-z][a-z0-9_-]{0,63}$/;
+const MEDIA = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/;
 const NS = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/;
 const own = (o, k) => Object.hasOwn(o, k);
 const fail = (path, reason) => { throw new Error(`${path}: ${reason}`); };
@@ -31,7 +32,7 @@ const url = (v, path) => {
 };
 const localPath = (v, path) => {
   string(v, path, 1, 4096);
-  if (!v.startsWith('/') || v.startsWith('//')) fail(path, 'expected absolute local path');
+  if (!(v.startsWith('/') && !v.startsWith('//')) && !/^[A-Za-z]:[\\/]/.test(v)) fail(path, 'expected absolute local path');
 };
 const unique = (entries, path) => {
   const seen = new Set();
@@ -91,7 +92,7 @@ export function validateStory(s, filename) {
   if (own(s,'supersedes')) id(s.supersedes,'supersedes');
   if (own(s,'provenance')) { object(s.provenance,'provenance',[],['event_id','task_id','repository_url','head','reference']); for (const [k,v] of Object.entries(s.provenance)) string(v,`provenance.${k}`,0,k === 'task_id'||k === 'head' ? 128 : k === 'event_id' ? 256 : 2048); }
   const links = s.links ?? []; if (!Array.isArray(links) || links.length > 16) fail('links','expected at most 16 links');
-  for (const [i,l] of links.entries()) { object(l,`links[${i}]`,['id','label'],['id','label','url','path']); key(l.id,`links[${i}].id`); string(l.label,`links[${i}].label`,1,120); if (own(l,'url') === own(l,'path')) fail(`links[${i}]`,'expected exactly one destination'); if (own(l,'url')) url(l.url,`links[${i}].url`); else localPath(l.path,`links[${i}].path`); } unique(links,'links');
+  for (const [i,l] of links.entries()) { object(l,`links[${i}]`,['id','label'],['id','label','url','path','role','media_type']); if (own(l,'role')) key(l.role,`links[${i}].role`); if (own(l,'media_type') && (typeof l.media_type!=='string' || !MEDIA.test(l.media_type))) fail(`links[${i}].media_type`,'expected a media type such as text/markdown'); key(l.id,`links[${i}].id`); string(l.label,`links[${i}].label`,1,120); if (own(l,'url') === own(l,'path')) fail(`links[${i}]`,'expected exactly one destination'); if (own(l,'url')) url(l.url,`links[${i}].url`); else localPath(l.path,`links[${i}].path`); } unique(links,'links');
   const actions = s.actions ?? []; if (!Array.isArray(actions) || actions.length > 8) fail('actions','expected at most 8 actions');
   for (const [i,a] of actions.entries()) {
     object(a,`actions[${i}]`,['id','label','handler'],['id','label','handler','args','choice']); key(a.id,`actions[${i}].id`); string(a.label,`actions[${i}].label`,1,120); key(a.handler,`actions[${i}].handler`);
