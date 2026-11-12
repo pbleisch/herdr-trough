@@ -57,6 +57,40 @@ test('built-in path reveal is explicit and a decision needs a story-hash route',
   assert.equal((await runReviewed(dir,second.token)).outcome,'failed');
 });
 
+test('local open plans open documents and folders but reveal runnable paths',async()=>{
+  const dir=await root(),folder=path.join(dir,'folder'),document=path.join(dir,'report.pdf');
+  await fs.mkdir(folder);
+  await fs.writeFile(document,'report');
+  const script=path.join(dir,'build.sh'),executable=path.join(dir,'binary'),app=path.join(dir,'Example.app');
+  await fs.writeFile(script,'echo hi');
+  await fs.writeFile(executable,'binary',{mode:0o755});
+  await fs.mkdir(app);
+  const s={...base(),summary:`Read ${document} or ${script}.`,links:[{id:'folder',label:'Folder',path:folder},{id:'binary',label:'Binary',path:executable},{id:'app',label:'App',path:app}],actions:[{id:'open',label:'Open folder',handler:'open_file',args:{link:'folder'}}]};
+  await add(dir,s);
+  for(const [target,argv] of [[document,[document]],[folder,[folder]],[script,['-R',script]],[executable,['-R',executable]],[app,['-R',app]]]) {
+    const sheet=await review(dir,s.id,'__open_local_path',{path:target});
+    assert.deepEqual(sheet.plan.argv,argv,target);
+  }
+  assert.deepEqual((await review(dir,s.id,'open')).plan.argv,[folder]);
+  await assert.rejects(review(dir,s.id,'__open_local_path',{path:path.join(dir,'other')}),/not present in this story/);
+  await fs.unlink(document);
+  await assert.rejects(review(dir,s.id,'__open_local_path',{path:document}),/Path does not exist/);
+});
+
+test('local open expands home paths and checks symlink targets',async()=>{
+  const dir=await root(),homeFile=path.join(os.homedir(),`.trough-open-${crypto.randomBytes(8).toString('hex')}.txt`);
+  const script=path.join(dir,'script.sh'),alias=path.join(dir,'alias.txt');
+  try {
+    await fs.writeFile(homeFile,'note');
+    await fs.writeFile(script,'echo hi');
+    await fs.symlink(script,alias);
+    const shorthand=`~/${path.basename(homeFile)}`;
+    const s={...base(),kind:'decision',summary:`Open ${shorthand}`,decision:{question_id:'q',prompt:`Review ${alias}?`,options:[]}}; await add(dir,s);
+    assert.deepEqual((await review(dir,s.id,'__open_local_path',{path:shorthand})).plan.argv,[homeFile]);
+    assert.deepEqual((await review(dir,s.id,'__open_local_path',{path:alias})).plan.argv,['-R',alias]);
+  } finally {await fs.unlink(homeFile);}
+});
+
 test('CLI review and run are separate operations with a receipt',async()=>{
   const dir=await root(),s={...base(),actions:[{id:'a',label:'A',handler:'noop'}]}; await add(dir,s);
   await config(dir,{handlers:{noop:{kind:'command',executable:'/usr/bin/true',argv:[],args:{},effects:['Run the local noop']}}});

@@ -1,4 +1,5 @@
 const URL_CANDIDATE = /https?:\/\/[^\s<>"']+/gi;
+const PATH_CANDIDATE = /(?:^|[\s([{])((?:\/(?!\/)|~\/)[^\s<>"']+)/g;
 const TRAILING_PUNCTUATION = /[.,!?;:]+$/;
 
 export function isHttpUrl(value) {
@@ -40,5 +41,24 @@ export function splitHttpLinks(text) {
   }
   if (start < text.length || !parts.length) parts.push({text: text.slice(start)});
   return parts;
+}
+
+export function splitDetailLinks(text) {
+  return splitHttpLinks(text).flatMap(part => {
+    if (part.url) return [part];
+    const pieces = [];
+    let start = 0;
+    for (const match of part.text.matchAll(PATH_CANDIDATE)) {
+      const candidate = match[1];
+      const index = match.index + match[0].length - candidate.length;
+      const localPath = trimUrl(candidate);
+      if (localPath === '/' || localPath === '~/' || !localPath) continue;
+      if (index > start) pieces.push({text: part.text.slice(start, index)});
+      pieces.push({text: localPath, path: localPath});
+      start = index + localPath.length;
+    }
+    if (start < part.text.length || !pieces.length) pieces.push({text: part.text.slice(start)});
+    return pieces;
+  });
 }
 

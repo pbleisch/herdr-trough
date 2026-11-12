@@ -5,7 +5,7 @@ import { STATES, visible, groups, choices } from './feed.js';
 import { ProducerSchedule } from './producer-schedule.js';
 import { localTime, relativeTime } from './time.js';
 import { severityLabel } from './severity-label.js';
-import { isHttpUrl, splitHttpLinks } from './links.js';
+import { isHttpUrl, splitDetailLinks } from './links.js';
 
 const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'?t.working:severity==='notice'?t.accent:t.muted;
 
@@ -116,6 +116,17 @@ export default class Trough extends View {
       finally {this.running=false;cx.notify();}
     });
   }
+  openLocalPath(target,cx) {
+    const storyId=this.sel;
+    cx.spawn(async cx=>{
+      try {
+        const receipt=JSON.parse(await this.call(['open',storyId,target]));
+        this.receipts=[receipt,...this.receipts.filter(r=>r.receipt_id!==receipt.receipt_id)];
+        this.error=receipt.outcome==='failed'?receipt.result:null;
+      } catch(e) {this.error=e.message;}
+      cx.notify();
+    });
+  }
   filtered() { return visible(this.rows,{...this.filter,text:this.input.value()}); }
   changeFilter(field,value,cx) {
     const selected=this.filter[field];
@@ -162,17 +173,17 @@ export default class Trough extends View {
   }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
   detailText(text,size,color,t) {
-    return h_flex().flex_wrap().text_size(size).text_color(color).children(splitHttpLinks(text).map(part=>{
+    return h_flex().flex_wrap().text_size(size).text_color(color).children(splitDetailLinks(text).map(part=>{
       const span=div().child(part.text);
-      return part.url?span.text_color(t.accent).underline().cursor_pointer()
-        .on_click((_e,cx)=>{cx.stop_propagation();if(isHttpUrl(part.url)) cx.open_url(part.url);}):span;
+      return part.url||part.path?span.text_color(t.accent).underline().cursor_pointer()
+        .on_click((_e,cx)=>{cx.stop_propagation();if(part.path) this.openLocalPath(part.path,cx); else if(isHttpUrl(part.url)) cx.open_url(part.url);}):span;
     }));
   }
   detailLink(link,t) {
     const destination=link.url??link.path;
     const value=div().child(destination);
-    if(isHttpUrl(destination)) value.text_color(t.accent).underline().cursor_pointer()
-      .on_click((_e,cx)=>{cx.stop_propagation();cx.open_url(destination);});
+    if(link.path||isHttpUrl(destination)) value.text_color(t.accent).underline().cursor_pointer()
+      .on_click((_e,cx)=>{cx.stop_propagation();if(link.path) this.openLocalPath(link.path,cx); else cx.open_url(destination);});
     return h_flex().flex_wrap().text_size(11).text_color(t.muted)
       .child(div().child(`${link.label}: `)).child(value);
   }

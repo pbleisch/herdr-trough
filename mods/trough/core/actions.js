@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { constants } from 'node:fs';
@@ -7,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { KEY } from './schema.js';
 import { layout, stored, publishExclusive, replaceAtomic, withStateLock } from './store.js';
 import * as macos from './platform/macos.js';
+import { splitDetailLinks } from '../links.js';
 
 const text=v=>JSON.stringify(v,null,2)+'\n';
 const hash=v=>crypto.createHash('sha256').update(text(v)).digest('hex');
@@ -30,10 +32,24 @@ async function executable(name) {
   return null;
 }
 const commandPlan=(command,argv,description)=>({command,argv,effects:[description,`Run ${JSON.stringify([command,...argv])}`]});
+const RUNS=new Set(['app','command','tool','terminal','workflow','action','pkg','mpkg','dmg','jar','scpt','scptd','applescript','osax','prefpane','saver','kext','plugin','bundle','framework','xpc','appex','webloc','inetloc','fileloc','afploc','ftploc','url','mobileconfig','configprofile','sh','bash','zsh','csh','tcsh','ksh','fish','py','pyw','rb','pl','php','lua','tcl','ps1','bat','cmd','exe','msi','vbs','scr']);
+const extension=file=>path.extname(file).slice(1).toLowerCase();
+async function localOpenPlan(target) {
+  if(typeof target!=='string'||!(target.startsWith('/')&&!target.startsWith('//')||target.startsWith('~/'))) fail('expected an absolute or ~ local path');
+  const file=target.startsWith('~/')?path.join(os.homedir(),target.slice(2)):target;
+  let stat,real;
+  try {stat=await fs.stat(file);real=await fs.realpath(file);}
+  catch(e) {if(e.code==='ENOENT'||e.code==='ENOTDIR') fail(`Path does not exist: ${file}`);throw e;}
+  if(!stat.isFile()&&!stat.isDirectory()) fail(`Path is not a file or folder: ${file}`);
+  const couldRun=(stat.isFile()&&Boolean(stat.mode&0o111))||RUNS.has(extension(file))||RUNS.has(extension(real))||(stat.isDirectory()&&Boolean(extension(file)||extension(real)));
+  const c=couldRun?macos.revealPath(file):macos.openPath(file);
+  return commandPlan(c[0],c.slice(1),`${couldRun?'Reveal':'Open'} path ${file}${couldRun?' in Finder':''}`);
+}
 async function builtInPlan(id,story,args,context) {
-  if(['open_url','open_path'].includes(id) && process.platform!=='darwin') fail(`${id} is currently available on macOS only`);
+  if(['open_url','open_path','open_file'].includes(id) && process.platform!=='darwin') fail(`${id} is currently available on macOS only`);
   if(id==='open_url') { exactKeys(args,['link'],'open_url'); const l=linkFor(story,args,'url'); const c=macos.openUrl(l.url); return commandPlan(c[0],c.slice(1),`Open URL ${l.url}`); }
   if(id==='open_path') { exactKeys(args,['link'],'open_path'); const l=linkFor(story,args,'path'); const c=macos.revealPath(l.path); return commandPlan(c[0],c.slice(1),`Reveal path ${l.path} in Finder`); }
+  if(id==='open_file') { exactKeys(args,context.inlinePath?['path']:['link'],'open_file'); const target=context.inlinePath?args.path:linkFor(story,args,'path').path; return localOpenPlan(target); }
   if(id==='add_to_reading_list') { exactKeys(args,['link','note'],'add_to_reading_list'); const l=linkFor(story,args); if(args.note!==undefined&&(typeof args.note!=='string'||args.note.length>1024)) fail('note must be at most 1024 characters'); const rl=await executable('rl'); if(!rl) fail('rl is unavailable'); const target=l.url??l.path; const argv=['add',target,'--from','Trough','--if-new']; if(args.note) argv.push('--note',args.note); return commandPlan(rl,argv,`Add ${target} to reading list${args.note?` with note: ${args.note}`:''}`); }
   if(id==='answer_decision') {
     exactKeys(args,[],'answer_decision');
@@ -96,11 +112,14 @@ function configPlan(def,args) {
 }
 async function planFor(root,storyId,actionId,choice={}) {
   const {story,hash:story_hash}=await stored(root,storyId);
-  const action=story.actions?.find(a=>a.id===actionId); if(!action) fail('action not found');
+  const inlinePath=actionId==='__open_local_path';
+  if(inlinePath && (typeof choice.path!=='string'||![...(story.links??[]).map(l=>l.path),...splitDetailLinks(story.summary).map(p=>p.path),...splitDetailLinks(story.decision?.prompt??'').map(p=>p.path)].includes(choice.path))) fail('path is not present in this story');
+  const action=inlinePath?{id:actionId,handler:'open_file',args:{path:choice.path}}:story.actions?.find(a=>a.id===actionId); if(!action) fail('action not found');
   const {config,packages}=await registry(root);
   const args=action.args??{};
   let plan;
-  if(Object.hasOwn(config.handlers,action.handler)) plan=configPlan(config.handlers[action.handler],args);
+  if(inlinePath) plan=await builtInPlan(action.handler,story,args,{inlinePath:true});
+  else if(Object.hasOwn(config.handlers,action.handler)) plan=configPlan(config.handlers[action.handler],args);
   else if(Object.hasOwn(packages,action.handler)) {
     const h=packages[action.handler]; validateArgs(args,h.args??{});
     if(typeof h.plan!=='function'||typeof h.run!=='function'||!Array.isArray(h.effects)) fail('invalid integration handler');
@@ -110,6 +129,10 @@ async function planFor(root,storyId,actionId,choice={}) {
   } else plan=await builtInPlan(action.handler,story,args,{root,config,story_hash,option:choice.option,comment:choice.comment});
   if(!plan) fail(`handler unavailable: ${action.handler}`);
   return {story_id:storyId,action_id:actionId,handler:action.handler,source:story.source,story_hash,plan};
+}
+export async function openLocalPath(root,storyId,target) {
+  const sheet=await review(root,storyId,'__open_local_path',{path:target});
+  return runReviewed(root,sheet.token);
 }
 export async function review(root,storyId,actionId,choice={}) {
   return withStateLock(root,async()=>{
