@@ -15,6 +15,8 @@ export default class Trough extends View {
     this.cli=`${appHome()}/mods/trough/bin/trough`;
     this.handle=cx.focus_handle(); this.rows=[]; this.rejected=0; this.sel=null; this.filter={inbox:true,states:[],source:[],kind:[],severity:[],subject:[]}; this.filterPicker=false; this.filterField='source';
     this.detail=false; this.search=false; this.typing=false; this.error=null; this.pick=null; this.review=null; this.receipts=[]; this.deleteConfirm=null; this.deleting=false;
+    // Standing approvals: the list, whether its panel is open, and the review sheet's checkbox.
+    this.allowed=[]; this.allowView=false; this.alwaysAllow=false;
     this.resetSearchInput(cx);
     this.commentInput=InputState.new({placeholder:'Optional comment'});
     this.commentInput.on('focus',(_e,cx)=>{this.commentTyping=true;cx.notify();});
@@ -72,7 +74,7 @@ export default class Trough extends View {
   }
   async reload(cx) {
     if(this.loading) return; this.loading=true;
-    try { this.rows=JSON.parse(await this.call(['ls','--all','--json'])); this.receipts=JSON.parse(await this.call(['receipts'])); this.rejected=JSON.parse(await this.call(['rejections'])).length; this.packs=JSON.parse(await this.call(['packages','list','--json'])); this.error=null; this.alignSelection(); }
+    try { this.rows=JSON.parse(await this.call(['ls','--all','--json'])); this.receipts=JSON.parse(await this.call(['receipts'])); this.rejected=JSON.parse(await this.call(['rejections'])).length; this.packs=JSON.parse(await this.call(['packages','list','--json'])); this.allowed=JSON.parse(await this.call(['allow','list','--json'])); this.error=null; this.alignSelection(); }
     catch(e) { this.error=e.message; }
     finally { this.loading=false; cx.notify(); }
   }
@@ -102,27 +104,50 @@ export default class Trough extends View {
         const args=['review',storyId,action.id]; if(option) args.push('--option',option);
         if(option && this.commentInput.value()) args.push('--comment',this.commentInput.value());
         const sheet=JSON.parse(await this.call(args));
-        if(this.sel===storyId) {this.review=sheet;this.pick=null;this.error=null;}
+        if(this.sel===storyId) this.showReview(sheet);
       } catch(e) {this.error=e.message;}
       cx.notify();
     });
   }
+  // The checkbox starts ticked only when the person already allowed this kind of action and its handler changed since.
+  showReview(sheet) { this.review=sheet; this.alwaysAllow=sheet.always_allow?.state==='changed'; this.pick=null; this.error=null; }
+  showReceipt(receipt) { this.receipts=[receipt,...this.receipts.filter(r=>r.receipt_id!==receipt.receipt_id)]; this.error=receipt.outcome==='failed'?receipt.result:null; }
+  // A pack offer: runs at once when the person always allows it, otherwise opens the review sheet.
+  offerAct(offer,cx) {
+    const storyId=this.sel;
+    if(this.acting) return;
+    this.acting=true; this.review=null; this.pick=null;
+    cx.spawn(async cx=>{
+      try {
+        const result=JSON.parse(await this.call(['act',storyId,offer.id]));
+        if(result.receipt) this.showReceipt(result.receipt);
+        else if(this.sel===storyId) this.showReview(result.review);
+      } catch(e) {this.error=e.message;}
+      finally {this.acting=false;cx.notify();}
+    });
+  }
   runReview(cx) {
     if(!this.review || this.review.story_id!==this.selected()?.story.id || this.running) return;
-    const token=this.review.token; this.running=true;
+    const token=this.review.token,standing=this.review.always_allow,keep=Boolean(standing&&this.alwaysAllow); this.running=true;
     cx.spawn(async cx=>{
-      try { const receipt=JSON.parse(await this.call(['run',token])); this.review=null; this.receipts=[receipt,...this.receipts.filter(r=>r.receipt_id!==receipt.receipt_id)]; this.error=receipt.outcome==='failed'?receipt.result:null; }
+      try {
+        // Unticking the box on an approval whose handler changed withdraws the approval.
+        if(standing?.state==='changed'&&!keep) await this.call(['allow','revoke',standing.key]);
+        const receipt=JSON.parse(await this.call(['run',token,...(keep?['--always-allow']:[])])); this.review=null; this.showReceipt(receipt);
+        if(standing) this.allowed=JSON.parse(await this.call(['allow','list','--json']));
+      }
       catch(e) {this.error=e.message;}
       finally {this.running=false;cx.notify();}
     });
+  }
+  revokeAllowed(key,cx) {
+    cx.spawn(async cx=>{try {await this.call(['allow','revoke',key]); await this.reload(cx);} catch(e){this.error=e.message;cx.notify();}});
   }
   openLocalPath(target,cx) {
     const storyId=this.sel;
     cx.spawn(async cx=>{
       try {
-        const receipt=JSON.parse(await this.call(['open',storyId,target]));
-        this.receipts=[receipt,...this.receipts.filter(r=>r.receipt_id!==receipt.receipt_id)];
-        this.error=receipt.outcome==='failed'?receipt.result:null;
+        this.showReceipt(JSON.parse(await this.call(['open',storyId,target])));
       } catch(e) {this.error=e.message;}
       cx.notify();
     });
@@ -164,12 +189,12 @@ export default class Trough extends View {
     else if(k==='x') this.clearFilters(cx);
     else if(this.filterPicker && ['1','2','3','4'].includes(k)) this.changeFilter('states',STATES[Number(k)-1],cx);
     else if(k==='enter') {this.detail=!this.detail;cx.notify();}
-    else if(k==='escape') {this.detail=false;this.search=false;this.filterPicker=false;this.review=null;this.pick=null;this.deleteConfirm=null;cx.notify();}
+    else if(k==='escape') {this.detail=false;this.search=false;this.filterPicker=false;this.allowView=false;this.review=null;this.pick=null;this.deleteConfirm=null;cx.notify();}
     else if(k==='r') this.act(this.selected()?.state.read_at?'unread':'read',cx);
     else if(k==='d') this.act(this.selected()?.state.done_at?'undo':'done',cx);
     else if(k==='shift-d') this.confirmDelete(cx);
     else if(k==='z') this.act('snooze',cx,['--until',new Date(Date.now()+3600000).toISOString()]);
-    else if(k==='a') {const row=this.selected(),action=row?.story.actions?.find(item=>!this.actionBlocked(row,item))??row?.offers?.find(item=>item.available);if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else this.actionReview(action,cx);}}
+    else if(k==='a') {const row=this.selected(),action=row?.story.actions?.find(item=>!this.actionBlocked(row,item))??row?.offers?.find(item=>item.available);if(action){this.detail=true;if(action.handler==='answer_decision'||action.choice){this.pick=action;cx.notify();}else if(action.pack) this.offerAct(action,cx);else this.actionReview(action,cx);}}
   }
   // The CLI reports why an action cannot run (handler not installed, tool missing); such an action is shown but cannot be clicked.
   actionBlocked(row,action) { const status=row.action_status?.[action.id]; return status&&!status.available?status.reason||'unavailable':null; }
@@ -179,8 +204,13 @@ export default class Trough extends View {
   }
   // An action a pack offers for this story (not declared by the story itself).
   offerButton(offer,t) {
-    return offer.available?this.button(`offer-${offer.id}`,offer.label,cx=>{this.review=null;this.pick=null;this.actionReview(offer,cx);},t)
+    return offer.available?this.button(`offer-${offer.id}`,offer.label,cx=>this.offerAct(offer,cx),t)
       :this.disabledButton(`offer-${offer.id}`,offer.label,t);
+  }
+  checkbox(id,label,on,fn,t) {
+    return h_flex().id(id).gap(6).items_center().cursor_pointer().on_click((_e,cx)=>fn(cx))
+      .child(div().w(13).h(13).flex_none().rounded(3).border(1).border_color(on?t.accent:t.muted).bg(on?t.accent:t.surface).flex().items_center().justify_center().text_size(10).text_color(t.background).child(on?'✓':''))
+      .child(div().flex_1().min_w(0).text_size(11).text_color(t.foreground).child(label));
   }
   disabledButton(id,label,t) { return div().id(id).px(8).py(5).rounded(5).border(1).border_color(t.border).text_color(t.dim).child(label); }
   button(id,label,fn,t,on=false) { return div().id(id).px(8).py(5).rounded(5).cursor_pointer().bg(on?t.selected:t.raised).text_color(on?t.foreground:t.muted).hover(s=>s.bg(t.hover)).on_click((_e,cx)=>fn(cx)).child(label); }
@@ -234,12 +264,20 @@ export default class Trough extends View {
       .child(h_flex().items_center().gap(6).child(div().flex_1().font_semibold().text_size(15).text_color(t.foreground).child('Trough'))
         .child(div().text_size(11).text_color(t.muted).child(`${unread} unread`))
         .when(this.rejected>0,el=>el.child(div().text_size(11).text_color(t.blocked).child(`${this.rejected} rejected`)))
+        .child(this.button('allow-toggle',`Always allowed${this.allowed.length?` (${this.allowed.length})`:''}`,cx=>{this.allowView=!this.allowView;cx.notify();},t,this.allowView))
         .child(this.button('refresh','↻',cx=>this.reload(cx),t)))
       .child(h_flex().gap(5).items_center()
         .child(this.button('filter-toggle','f Filters',cx=>{this.filterPicker=!this.filterPicker;cx.notify();},t,this.filterPicker))
         .child(div().flex_1().truncate().text_size(11).text_color(t.muted).child(this.filterSummary()))
         .child(this.button('filter-clear','x Clear',cx=>this.clearFilters(cx),t)))
       .when(Boolean(filterPicker),el=>el.child(filterPicker))
+      .when(this.allowView,el=>el.child(v_flex().gap(5).p(8).rounded(6).border(1).border_color(t.border).bg(t.surface)
+        .child(div().text_size(10).text_color(t.dim).child(this.allowed.length?'These actions run without a review sheet, for every story. Each run still leaves a receipt.':'No action is always allowed. Tick "Always allow" on the review sheet of an action a pack offers.'))
+        .children(this.allowed.map(item=>h_flex().gap(6).items_center()
+          .child(v_flex().flex_1().min_w(0).gap(1)
+            .child(div().text_size(11).text_color(t.foreground).child(item.effects[0]??item.label??item.key))
+            .child(div().text_size(10).text_color(item.state==='active'?t.dim:t.working).child(`${item.key}${item.at?` · allowed ${relativeTime(item.at)}`:''}${item.state==='active'?'':` · asks again: ${item.reason}`}`)))
+          .child(this.button(`allow-revoke-${item.key}`,'Revoke',cx=>this.revokeAllowed(item.key,cx),t))))))
       .when(Boolean(this.producers.length||this.producerSetupError),el=>el.child(div().text_size(10).text_color(this.producerSetupError?t.blocked:t.dim)
         .child(this.producerSetupError?`Producer: ${this.producerSetupError}`:this.producers.map(item=>{
           const status=this.producerHealth.get(item.id);
@@ -277,6 +315,10 @@ export default class Trough extends View {
         .child(div().text_size(11).text_color(t.muted).child(`Source claim: ${this.review.source.label} · ${this.review.source.id}`))
         .child(div().text_size(11).text_color(t.muted).child(this.review.offered_by==='story'?'Action declared by the story':`Action offered by pack ${this.review.offered_by}${this.review.offer?`: ${this.review.offer.label}`:''}`))
         .children(this.review.plan.effects.map((effect,i)=>div().text_size(11).text_color(t.foreground).child(`${i+1}. ${effect}`)))
+        .when(Boolean(this.review.always_allow),el=>el
+          .when(this.review.always_allow.state==='changed',el=>el.child(div().text_size(11).text_color(t.working).child('You always allowed this, but its handler changed since. Confirm to keep allowing it.')))
+          .child(this.checkbox('always-allow',`Always allow: ${this.review.always_allow.effects[0]??this.review.offer?.label}`,this.alwaysAllow,cx=>{this.alwaysAllow=!this.alwaysAllow;cx.notify();},t))
+          .child(div().pl(19).text_size(10).text_color(t.dim).child(`Later clicks run at once, for every story (${this.review.always_allow.key}). Revoke under Always allowed.`)))
         .child(h_flex().gap(6)
           .child(this.button('confirm-action',this.running?'Running…':'Confirm action',cx=>this.runReview(cx),t,true))
           .child(this.button('cancel-action','Cancel',cx=>{this.review=null;cx.notify();},t)))))

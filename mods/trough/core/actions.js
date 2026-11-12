@@ -8,6 +8,7 @@ import { layout, stored, publishExclusive, replaceAtomic, withStateLock } from '
 import { localOpenPlan } from './core-pack.js';
 import { spawnSync } from 'node:child_process';
 import { splitDetailLinks } from '../links.js';
+import { readAllowed, writeAllowed, allowKey, isAllowKey } from './allow.js';
 
 const text=v=>JSON.stringify(v,null,2)+'\n';
 const hash=v=>crypto.createHash('sha256').update(text(v)).digest('hex');
@@ -98,6 +99,7 @@ async function handlerState(origin,id,def) {
     }
     if(origin==='built-in') return null;
     if(!plain(def)||typeof def.plan!=='function'||typeof def.run!=='function'||!Array.isArray(def.effects)) return 'invalid integration handler';
+    if(!['boolean','undefined'].includes(typeof def.always_allow)||!['function','undefined'].includes(typeof def.fingerprint)) return 'invalid integration handler';
     if(def.unavailable===undefined) return null;
     if(typeof def.unavailable!=='function') return 'invalid integration handler';
     const reason=await def.unavailable();
@@ -216,6 +218,48 @@ function configPlan(def,args) {
   });
   return {command:def.executable,argv,effects:[...def.effects,`Run ${JSON.stringify([def.executable,...argv])}`]};
 }
+
+// --- Standing approvals ("always allow") --------------------------------------------------------
+// The operator may let one handler, as offered by one pack, run without the review sheet. Only an
+// offer whose handler sets `always_allow: true` qualifies: never an action a story declares, a
+// decision answer or a prompt delivery. The approval pins a fingerprint of what the handler runs:
+// the pack's module file and options, the handler's arguments and declared effects, and whatever
+// its own `fingerprint()` reports (the core pack reports the open handler chain). When that
+// changes, the approval stops counting until the operator confirms a review again.
+const offeringPack=(catalog,name)=>catalog.packs.find(item=>item.name===name&&item.augment);
+async function standingFingerprint(pack,id,def) {
+  const module=crypto.createHash('sha256').update(await fs.readFile(pack.path)).digest('hex');
+  const own=def.fingerprint?await def.fingerprint():null;
+  return hash({pack:pack.name,path:pack.path,module,options:pack.options,handler:id,args:def.args??{},effects:def.effects,own:own??null});
+}
+// new: not approved. active: approved, runs without the sheet. changed: approved, but what the
+// handler runs changed since, so the sheet is shown once more.
+const standingState=(allowed,standing)=>!allowed[standing.key]?'new':allowed[standing.key].fingerprint===standing.fingerprint?'active':'changed';
+export async function listAllowed(root) {
+  const allowed=await readAllowed(root),catalog=await handlerCatalog(root),rows=[];
+  for(const [key,entry] of Object.entries(allowed).sort(([a],[b])=>a.localeCompare(b))) {
+    const pack=offeringPack(catalog,entry.pack),def=pack?.handlers[entry.handler];
+    let state='changed',reason;
+    if(!pack) reason=`pack ${entry.pack} is not installed or offers no actions`;
+    else if(!def) reason=`pack ${entry.pack} no longer has handler ${entry.handler}`;
+    else if(def.always_allow!==true) reason=`handler ${entry.handler} no longer accepts a standing approval`;
+    else if(await standingFingerprint(pack,entry.handler,def).catch(()=>null)===entry.fingerprint) state='active';
+    else reason='the handler changed since you allowed it; the next run asks you to confirm';
+    rows.push({key,pack:entry.pack,handler:entry.handler,label:entry.label??null,effects:Array.isArray(entry.effects)?entry.effects:[],at:entry.at??null,state,...(reason?{reason}:{})});
+  }
+  return rows;
+}
+export async function revokeAllowed(root,key) {
+  if(key!=='all'&&!isAllowKey(key)) fail('revoke needs PACK/HANDLER, as `trough allow` lists it, or all');
+  return withStateLock(root,async()=>{
+    const allowed=await readAllowed(root),revoked=key==='all'?Object.keys(allowed):[key];
+    if(key!=='all'&&!allowed[key]) fail(`${key} is not always allowed`);
+    for(const item of revoked) delete allowed[item];
+    if(revoked.length) await writeAllowed(root,allowed);
+    return {revoked};
+  });
+}
+
 async function planFor(root,storyId,actionId,choice={}) {
   const {story,hash:story_hash}=await stored(root,storyId);
   const inlinePath=actionId==='__open_local_path';
@@ -232,16 +276,19 @@ async function planFor(root,storyId,actionId,choice={}) {
     const core=catalog.packs.find(pack=>pack.built_in),state=core?.states.open_file;
     if(!core||core.error) fail('opening a local path needs the core pack; restore it with `trough packages add core`');
     if(!state.available) fail(state.reason);
-    return {reviewed:{...base,handler:'open_file',offered_by:'core',plan:{...await localOpenPlan(choice.path),kind:'package',package_id:'open_file'}},def:core.handlers.open_file};
+    return {reviewed:{...base,handler:'open_file',offered_by:'core',plan:{...await localOpenPlan(choice.path),kind:'package',package_id:'open_file'}},def:core.handlers.open_file,
+      ineligible:'it is not an action a pack offers'};
   }
   if(actionId.includes('.')) {
     // A pack offer: recomputed here, so review and run both see what the pack offers right now.
     const {offers,errors}=augmentStory(catalog,story),offer=offers.find(o=>o.id===actionId);
     if(!offer) fail(`action ${actionId} is not offered for this story${errors.length?` (${errors.map(e=>`pack ${e.pack}: ${e.error}`).join('; ')})`:''}`.slice(0,500));
-    const pack=catalog.packs.find(item=>item.name===offer.pack&&item.augment),state=pack.states[offer.handler];
+    const pack=offeringPack(catalog,offer.pack),state=pack.states[offer.handler];
     if(!state.available) fail(`handler ${offer.handler} is unavailable: ${state.reason}`);
     const def=pack.handlers[offer.handler];
-    return {reviewed:{...base,handler:offer.handler,offered_by:offer.pack,offer,plan:await packPlan(def,{id:offer.id,label:offer.label,handler:offer.handler,args:offer.args})},def};
+    const reviewed={...base,handler:offer.handler,offered_by:offer.pack,offer,plan:await packPlan(def,{id:offer.id,label:offer.label,handler:offer.handler,args:offer.args})};
+    if(def.always_allow!==true) return {reviewed,def,ineligible:`handler ${offer.handler} of pack ${offer.pack} does not accept a standing approval`};
+    return {reviewed,def,standing:{key:allowKey(pack.name,offer.handler),pack:pack.name,handler:offer.handler,label:offer.label,effects:[...def.effects],fingerprint:await standingFingerprint(pack,offer.handler,def)}};
   }
   const action=story.actions?.find(a=>a.id===actionId); if(!action) fail('action not found');
   const entry=catalog.handlers.get(action.handler);
@@ -253,20 +300,31 @@ async function planFor(root,storyId,actionId,choice={}) {
   else if(entry.origin==='pack') plan=await packPlan(entry.def,action);
   else plan=await builtInPlan(action.handler,story,args,{root,config:catalog.config,story_hash,option:choice.option,comment:choice.comment});
   if(!plan) fail(`handler ${action.handler} is not installed`);
-  return {reviewed:{...base,handler:action.handler,offered_by:'story',plan},def:entry.def};
+  return {reviewed:{...base,handler:action.handler,offered_by:'story',plan},def:entry.def,
+    ineligible:'the story declares this action; only actions a pack offers can be always allowed'};
 }
 export async function openLocalPath(root,storyId,target) {
   const sheet=await review(root,storyId,'__open_local_path',{path:target});
   return runReviewed(root,sheet.token);
 }
+// Call with the state lock held. `always_allow` is on the sheet only for an action that may be always allowed.
+async function reviewLocked(root,storyId,actionId,choice) {
+  const {reviewed,standing}=await planFor(root,storyId,actionId,choice),token=random();
+  const record={v:1,token,created_at:new Date().toISOString(),choice,reviewed};
+  await fs.mkdir(path.join(root,'reviews'),{recursive:true,mode:0o700});
+  await publishExclusive(path.join(root,'reviews'),`${token}.json`,Buffer.from(text(record)));
+  const state=standing?standingState(await readAllowed(root),standing):null;
+  return {token,...reviewed,...(standing?{always_allow:{key:standing.key,state,effects:standing.effects}}:{})};
+}
 export async function review(root,storyId,actionId,choice={}) {
-  return withStateLock(root,async()=>{
-    const {reviewed}=await planFor(root,storyId,actionId,choice),token=random();
-    const record={v:1,token,created_at:new Date().toISOString(),choice,reviewed};
-    await fs.mkdir(path.join(root,'reviews'),{recursive:true,mode:0o700});
-    await publishExclusive(path.join(root,'reviews'),`${token}.json`,Buffer.from(text(record)));
-    return {token,...reviewed};
-  });
+  return withStateLock(root,()=>reviewLocked(root,storyId,actionId,choice));
+}
+// What a click does: an action the operator always allows runs at once and returns {receipt};
+// anything else returns {review}, the sheet to confirm with `runReviewed`.
+export async function act(root,storyId,actionId,choice={}) {
+  const sheet=await review(root,storyId,actionId,choice);
+  if(sheet.always_allow?.state!=='active') return {review:sheet};
+  return {receipt:await runReviewed(root,sheet.token,{standing:true})};
 }
 async function executeAnswer(root,token,reviewed) {
   const {story}=await stored(root,reviewed.story_id),d=story.decision,source=story.source.id;
@@ -288,17 +346,26 @@ async function executeAnswer(root,token,reviewed) {
     return `${dir}/${token}.json`;
   } finally { await fs.rmdir(lock); }
 }
-export async function runReviewed(root,token) {
+// `alwaysAllow` records a standing approval for this kind of action before running it (the operator
+// ticked "Always allow" on the sheet). `standing` runs on an existing approval, without a sheet.
+export async function runReviewed(root,token,{alwaysAllow=false,standing:onApproval=false}={}) {
   if(!/^[0-9a-f]{32}$/.test(token)) fail('invalid review token');
   const receiptDir=path.join(root,'receipts');
   const prepared=await withStateLock(root,async()=>{
     const record=JSON.parse(await fs.readFile(path.join(root,'reviews',`${token}.json`),'utf8'));
     if(Date.now()-Date.parse(record.created_at)>300000) fail('review expired; review the action again');
-    const {reviewed:fresh,def}=await planFor(root,record.reviewed.story_id,record.reviewed.action_id,record.choice);
+    const {reviewed:fresh,def,standing,ineligible}=await planFor(root,record.reviewed.story_id,record.reviewed.action_id,record.choice);
     if(hash(fresh)!==hash(record.reviewed)) fail('story, offer or handler changed; review again');
-    const pending={v:1,receipt_id:token,created_at:new Date().toISOString(),story_id:fresh.story_id,source_id:fresh.source.id,question_id:fresh.plan.question_id,action_id:fresh.action_id,story_hash:fresh.story_hash,handler:fresh.handler,offered_by:fresh.offered_by,effects:fresh.plan.effects,outcome:'pending'};
+    if(alwaysAllow&&!standing) fail(`this action cannot be always allowed: ${ineligible}`);
+    if(onApproval&&(!standing||standingState(await readAllowed(root),standing)!=='active')) fail('this action is not always allowed any more; review it');
+    const pending={v:1,receipt_id:token,created_at:new Date().toISOString(),story_id:fresh.story_id,source_id:fresh.source.id,question_id:fresh.plan.question_id,action_id:fresh.action_id,story_hash:fresh.story_hash,handler:fresh.handler,offered_by:fresh.offered_by,
+      ...(onApproval?{approval:'always-allow',allow_key:standing.key}:{}),effects:fresh.plan.effects,outcome:'pending'};
     if(!await publishExclusive(receiptDir,`${token}.json`,Buffer.from(text(pending))))
       return {existing:JSON.parse(await fs.readFile(path.join(receiptDir,`${token}.json`),'utf8'))};
+    if(alwaysAllow) {
+      const {key,fingerprint,...shown}=standing;
+      await writeAllowed(root,{...await readAllowed(root),[key]:{...shown,fingerprint,at:new Date().toISOString()}});
+    }
     return {fresh,pending,record,def};
   });
   if(prepared.existing) return prepared.existing;

@@ -5,7 +5,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { openPlan, runChain, unavailableReason } from './open-handlers.js';
+import { openPlan, runChain, unavailableReason, chainFingerprint } from './open-handlers.js';
 
 export const name='core';
 export const rules=[
@@ -35,7 +35,8 @@ const linkFor=(story,args,want)=>{
   return link;
 };
 const linkArg={link:{type:'string',required:true,max_length:64}};
-const handler=(id,effect,plan)=>({args:linkArg,effects:[effect],unavailable:()=>unavailableReason(id),plan,run:({reviewed})=>runChain(reviewed.plan)});
+// Local and low-risk, so the operator may always allow them; the approval follows the handler chain.
+const handler=(id,effect,plan)=>({args:linkArg,effects:[effect],always_allow:true,fingerprint:chainFingerprint,unavailable:()=>unavailableReason(id),plan,run:({reviewed})=>runChain(reviewed.plan)});
 
 export function handlers() {
   return {

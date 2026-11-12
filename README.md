@@ -6,7 +6,7 @@ Trough is a local activity feed for [Herdr](https://herdr.dev) desktop. Tools an
 
 - **Local.** Stories are files in a folder on your machine. There is no service, no account and no third-party package.
 - **Immutable.** A published story never changes. Read, done and snooze are your own filing state, kept beside it.
-- **Reviewed actions.** A story cannot name a command. Actions come from handlers you installed, and nothing runs until you confirm the exact effects.
+- **Reviewed actions.** A story cannot name a command. Actions come from handlers you installed, and nothing runs until you confirm the exact effects. For a harmless local action such as showing a file in Finder, you can tick **Always allow** once and skip the sheet from then on.
 - **Actions attach themselves.** A producer only describes its links ("this is a report", "this is a pull request"). The packs you installed decide what can be done with them: open it, show it in the file manager, add it to a reading list.
 - **Usable without the pane.** The `trough` CLI does everything the pane does, so scripts and agents can publish and read stories on their own.
 
@@ -119,6 +119,25 @@ Offers never change the stored story. They are worked out again whenever stories
 
 Clicking an action opens a review sheet with the source claim, where the action came from (the story, or the pack that offered it) and the exact effects. A separate **Confirm action** click runs it once and writes a receipt. From the CLI, `trough review STORY ACTION` prints the sheet and a token, and `trough run TOKEN` runs it; `trough ls --json` lists each story's `offers` with their action IDs. A failed or uncertain action stays visible in `receipts/` and is never retried automatically.
 
+### Always allow
+
+Some actions are local and harmless enough that reviewing them every time is noise: showing a path in Finder, opening a link, adding a link to the reading list. Their review sheet has an **Always allow** checkbox. Tick it and confirm, and from then on a click on that kind of action runs at once, for every story, with no sheet. Each run still writes a receipt, marked `"approval": "always-allow"`.
+
+- **What it covers.** One handler as offered by one pack, such as `core/open_path` (Show in Finder). Allowing that does not allow `core/open_url` or `core/open_file`.
+- **What can never be always allowed.** Answering a decision, delivering a prompt to an agent, and any action a story declares itself. Only actions a pack offers qualify, and only when the pack's handler is marked as local and low-risk. The shipped ones are `open_url`, `open_path` and `open_file` from the core pack and `add_to_reading_list` from the reading-list pack.
+- **Who can grant it.** Only you, by confirming a review. A story or a pack cannot.
+- **When it asks again.** The approval is tied to what the handler runs. If that changes (you turn [your own handler](#your-own-handler) on or off or edit it, the mod is updated, a pack's file or options change, `rl` moves), the next click shows the sheet once, with the box already ticked. Confirm to keep allowing it, or untick the box to withdraw the approval.
+- **See and revoke.** The **Always allowed** button in the pane header lists the approvals, each with a **Revoke** button. From the CLI:
+
+```sh
+trough allow                         # what is always allowed, and whether each still holds
+trough allow revoke core/open_path   # or: trough allow revoke all
+trough run TOKEN --always-allow      # confirm a review and always allow that kind of action
+trough act STORY ACTION              # what a click does: run at once if always allowed, else print the sheet
+```
+
+Approvals live in `$TROUGH_DIR/allow.json`. Deleting the file clears them all.
+
 An action that cannot run right now (its handler is not installed, a tool is missing, a decision has no answer route) is shown disabled with the reason beside it. `trough ls --json` reports the same per story, as `action_status` for declared actions and `available` on each offer.
 
 `trough actions` lists every installed handler with its arguments and whether it can run, then each pack's rules for attaching actions:
@@ -215,7 +234,7 @@ Keep the checkout these packs are loaded from: the list stores their absolute pa
 
 ## Data folder
 
-`$TROUGH_DIR` holds `inbox/`, the immutable `store/`, per-story `state/`, `rejected/`, `reviews/`, `receipts/`, `answers/<source-id>/`, `tombstones/`, and the operator files `handlers.json` and `trough.json`. Treat `handlers.json` and any pack it lists as code: whoever can write them can run commands as you. Your own open handler and its `trust.json` live in the Herdr home instead, under `trough/`.
+`$TROUGH_DIR` holds `inbox/`, the immutable `store/`, per-story `state/`, `rejected/`, `reviews/`, `receipts/`, `answers/<source-id>/`, `tombstones/`, and the operator files `handlers.json`, `trough.json` and `allow.json` (your [standing approvals](#always-allow)). Treat `handlers.json` and any pack it lists as code: whoever can write them can run commands as you. Your own open handler and its `trust.json` live in the Herdr home instead, under `trough/`.
 
 ## Develop
 

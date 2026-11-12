@@ -129,6 +129,14 @@ export async function unavailableReason(id) {
   return null;
 }
 
+// What open and reveal run on this computer, apart from the item: the person's handler (state, real
+// path and contents) and the built-in script. A standing approval holds only while this is unchanged.
+export async function chainFingerprint() {
+  const user=await userHandler(),file=builtInFile();
+  return {user:{state:user.state,path:user.path??null,sha256:user.sha256??null},
+    built_in:file?{path:file,sha256:crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex')}:null};
+}
+
 // The exact programs an action will run, in order, for the review sheet and the run.
 export async function openPlan(verb,item,description) {
   if(!VERBS.includes(verb)) throw new Error(`unknown handler verb ${verb}`);

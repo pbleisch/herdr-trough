@@ -18,6 +18,11 @@ export function handlers(options) {
     save_to_notes:{
       args:{link:{type:'string',required:true,max_length:64}},
       effects:['Append a line to the notes file'],
+      // Local and harmless to repeat, so the operator may tick "Always allow" for it. Leave this
+      // out for anything that answers a decision, messages an agent or sends data elsewhere.
+      always_allow:true,
+      // What decides what will run, besides the pack's file and options. A change asks the operator again.
+      fingerprint:()=>({file:options.file}),
       // The review sheet shows these effects; say exactly what will change.
       plan({story,args}) {
         const link=story.links?.find(item=>item.id===args.link);

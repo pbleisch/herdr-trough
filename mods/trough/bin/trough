@@ -3,21 +3,21 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { rootDir, post, ingest, stored, setState, list, rejections } from '../core/store.js';
 import { parseJson, validateStory } from '../core/schema.js';
-import { review, runReviewed, receipts, openLocalPath, listActions, annotate } from '../core/actions.js';
+import { review, act, runReviewed, receipts, openLocalPath, listActions, annotate, listAllowed, revokeAllowed } from '../core/actions.js';
 import { listPacks, addPack, removePack } from '../core/packages.js';
 import { userHandler, turnOn, turnOff } from '../core/open-handlers.js';
 import { listProducers, runProducer } from '../core/producers.js';
 import { prune, deleteStory } from '../core/prune.js';
 import { visible } from '../feed.js';
 
-const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN | open STORY PATH | receipts [STORY] | producers | produce ID | packages [list|check] [--json] | packages add PATH|core [--options-file FILE] | packages remove NAME|PATH | actions [--json] | handler [status|on|off]\nGlobal: --dir DIR (or TROUGH_DIR). --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
+const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN [--always-allow] | act STORY ACTION [--option ID] [--comment TEXT] | allow [list] [--json] | allow revoke PACK/HANDLER|all | open STORY PATH | receipts [STORY] | producers | produce ID | packages [list|check] [--json] | packages add PATH|core [--options-file FILE] | packages remove NAME|PATH | actions [--json] | handler [status|on|off]\nGlobal: --dir DIR (or TROUGH_DIR). --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
 function parse(argv) {
   const positional=[],opts={};
   for (let i=0;i<argv.length;i++) {
     const x=argv[i];
     if (!x.startsWith('--')) { positional.push(x); continue; }
     const k=x.slice(2);
-    if (['json','inbox','unread','needs-action','done','snoozed','all','dry-run'].includes(k)) { opts[k]=true; continue; }
+    if (['json','inbox','unread','needs-action','done','snoozed','all','dry-run','always-allow'].includes(k)) { opts[k]=true; continue; }
     if (!['options-file','dir','file','source','kind','title','summary','severity','subject','search','group-key','link','until','option','comment','older-than'].includes(k) || i+1>=argv.length) throw new Error(`unknown or incomplete option: ${x}`);
     if (k==='link') (opts.link??=[]).push(argv[++i]);
     else if (['source','kind','severity','subject'].includes(k) && positional[0]==='ls') (opts[k]??=[]).push(argv[++i]);
@@ -51,7 +51,20 @@ async function main() {
   if (command==='producers') { if(id) throw new Error('producers takes no ID'); output(await listProducers(root)); return; }
   if (command==='produce') { if(!id||rest.length) throw new Error('produce needs a producer ID'); output(await runProducer(root,id)); return; }
   if (command==='review') { if (!id||rest.length!==1) throw new Error('review needs STORY and ACTION'); output(await review(root,id,rest[0],{option:opts.option,comment:opts.comment})); return; }
-  if (command==='run') { if (!id||rest.length) throw new Error('run needs a review token'); output(await runReviewed(root,id)); return; }
+  if (command==='act') { if (!id||rest.length!==1) throw new Error('act needs STORY and ACTION'); output(await act(root,id,rest[0],{option:opts.option,comment:opts.comment})); return; }
+  if (command==='run') { if (!id||rest.length) throw new Error('run needs a review token'); output(await runReviewed(root,id,{alwaysAllow:opts['always-allow']})); return; }
+  if (command==='allow') {
+    const sub=id??'list';
+    if (sub==='revoke') { if(rest.length!==1) throw new Error('allow revoke needs PACK/HANDLER or all'); output(await revokeAllowed(root,rest[0])); return; }
+    if (sub!=='list'||rest.length) throw new Error('allow takes list, or revoke PACK/HANDLER|all');
+    const rows=await listAllowed(root);
+    if (opts.json) output(rows);
+    else {
+      if (!rows.length) output('No action is always allowed. Confirm a review with `trough run TOKEN --always-allow` to add one.');
+      for (const row of rows) output(`${row.key}\t${row.state==='active'?'active':`asks again: ${row.reason}`}\t${row.effects.join('; ')||row.label||'-'}\t${row.at?`since ${row.at}`:'-'}`);
+    }
+    return;
+  }
   if (command==='open') { if (!id||rest.length!==1) throw new Error('open needs STORY and PATH'); output(await openLocalPath(root,id,rest[0])); return; }
   if (command==='receipts') { if(rest.length) throw new Error('receipts accepts at most one story ID'); output(await receipts(root,id)); return; }
   if (command==='packages') {

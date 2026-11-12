@@ -43,6 +43,9 @@ export function handlers(options={}) {
     add_to_reading_list:{
       args:{link:{type:'string',required:true,max_length:64},note:{type:'string',max_length:1024}},
       effects:['Add the linked URL or path to the reading list with rl'],
+      // Local and low-risk, so the operator may always allow it; the approval follows the rl command used.
+      always_allow:true,
+      async fingerprint() { return {rl:await findRl(options)}; },
       async unavailable() { return await findRl(options)?null:options.rl?`${options.rl} is missing or not executable`:'rl is not on PATH'; },
       async plan({story,args}) {
         const link=story.links?.find(item=>item.id===args.link);

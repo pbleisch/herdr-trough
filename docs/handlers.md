@@ -61,6 +61,7 @@ A pack may export:
 
 Each handler descriptor has `args` (the typed schema above), `effects` (declared effect classes), `plan({story,action,args,root,choice})`, and `run({root,reviewed,choice,token})`.
 It may also have `unavailable()`, which returns a short reason while the handler cannot run (for example, a tool it needs is not installed) and nothing otherwise. Keep it cheap: it runs whenever stories are listed.
+Set `always_allow: true` only on a handler whose effect is local and low-risk; see [Standing approvals](#standing-approvals).
 `plan` must return a serializable object with an `effects` string array spelling out the exact targets and changes.
 Trough stores that plan with the review token and compares it with a fresh plan before calling `run`.
 
@@ -92,6 +93,18 @@ The guard rails:
 Give `augment` good criteria by reading the link's type: `link.url` or `link.path`, its optional `role` (`report`, `document`, `artifact`, `log`, `screenshot`, `pr`, `issue`, `source`, or another key) and its optional `media_type` (a MIME type). Producers should set these on their links instead of declaring generic actions.
 
 [docs/example-pack/index.js](example-pack/index.js) is a complete pack with a handler, facts, rules and an augmenter; `packages/reading-list/index.js` and `mods/trough/core/core-pack.js` are the shipped ones.
+
+### Standing approvals
+
+The operator can tick **Always allow** on a review sheet (or pass `trough run TOKEN --always-allow`). That records a standing approval in `$TROUGH_DIR/allow.json`, and later clicks on the same kind of action run without a sheet. `trough act STORY ACTION` is the click: it runs the action and prints `{"receipt": ...}` when a standing approval holds, and otherwise prints `{"review": ...}`, the same sheet as `trough review`. `trough allow` lists the approvals and `trough allow revoke PACK/HANDLER|all` removes them.
+
+- **Scope.** An approval is keyed `<pack>/<handler>`: one handler, as offered by one pack through `augment`, for every story. It never covers an action a story declares, even one that names the same handler, nor the same handler ID from another pack.
+- **Eligibility.** The handler must set `always_allow: true`. That only makes the checkbox available; it grants nothing. Set it for effects that stay on this computer and are harmless to repeat, such as opening or revealing a link. Do not set it on a handler that answers a decision, sends a prompt or message to an agent, or sends data elsewhere. `answer_decision` and the Firstmate pack's handlers do not set it, and `run --always-allow` is refused for them.
+- **Granting.** Only a confirmed review writes an approval. Stories are data and have no field for it; `augment` results and handler descriptors have none either.
+- **Fingerprint.** The approval stores a SHA-256 over the pack's name, path, module file contents and options, the handler's ID, argument schema and declared effects, and the value of the handler's optional `fingerprint()`. Return from `fingerprint()` whatever else decides what will run: the core pack returns the state, path and hash of the person's own open handler and the hash of the built-in script; the reading-list pack returns the `rl` path it found. When the fingerprint differs, the approval is listed as "asks again", the next click returns the sheet with `always_allow.state` set to `changed`, and one confirmation with `--always-allow` restores it.
+- **Receipts.** A run on a standing approval still creates a review record and a receipt. The receipt carries `"approval": "always-allow"` and `"allow_key"`.
+
+A review sheet for an eligible action carries `always_allow: {key, state, effects}`, where `state` is `new`, `active` or `changed`. Other sheets have no such field.
 
 ### Producers
 
