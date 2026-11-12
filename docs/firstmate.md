@@ -59,7 +59,7 @@ While the Trough pane is open, its configured Firstmate producer syncs on openin
 It reads the local backlog snapshot, branch outcomes, merge records, and project registry without changing Firstmate tracked files.
 The optional Firstmate `config/fleet-ledger` flag adds merge and status history to the feed when enabled by the operator.
 The first sync also establishes a project registry baseline; later additions and removals create project stories. Repeated outcomes for one task share a group.
-Finished report cards link the report file. If the `add_to_reading_list` handler is installed when the card is created (see the reading-list pack in the [README](../README.md#packs)), the card also offers **Add to reading list**. Stories are immutable, so cards created before the pack was added do not gain the action.
+Finished report cards link the report file with role `report` and its media type, and merge cards link the pull request with role `pr`. The pack declares no generic link actions: the core pack offers Open and Show in Finder, and the reading-list pack, if you list it, offers **Add to reading list** on the report (see [Packs](../README.md#packs)). Cards created before a pack was added gain its actions too.
 Policy anomalies require a structured Firstmate record and are covered in [the draft proposals](firstmate-proposals.md).
 
 ## Actions

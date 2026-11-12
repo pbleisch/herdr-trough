@@ -6,14 +6,21 @@ Trough is a local activity feed for [Herdr](https://herdr.dev) desktop. Tools an
 
 - **Local.** Stories are files in a folder on your machine. There is no service, no account and no third-party package.
 - **Immutable.** A published story never changes. Read, done and snooze are your own filing state, kept beside it.
-- **Reviewed actions.** A story can offer actions, but it cannot name a command. It names a handler you installed, and nothing runs until you confirm the exact effects.
+- **Reviewed actions.** A story cannot name a command. Actions come from handlers you installed, and nothing runs until you confirm the exact effects.
+- **Actions attach themselves.** A producer only describes its links ("this is a report", "this is a pull request"). The packs you installed decide what can be done with them: open it, show it in the file manager, add it to a reading list.
 - **Usable without the pane.** The `trough` CLI does everything the pane does, so scripts and agents can publish and read stories on their own.
 
 ## Status
 
 Version 0.1.0. The feed and the CLI need only Node.js (developed and tested on Node.js 26). The pane needs Herdr desktop.
 
-The built-in open and reveal actions (`open_url`, `open_path`, `open_file`) and clicking a local path in a story work on macOS only: they call `/usr/bin/open`. On other systems those actions are shown disabled with that reason, and clicking a local path reports it. Everything else is plain Node.js, but it has only been run on macOS.
+| Platform | Open and reveal actions | State |
+| --- | --- | --- |
+| macOS | `open`, and `open -R` for Finder | Developed and tested here. |
+| Linux | `xdg-open`; reveal asks the file manager over D-Bus (`gdbus`), else opens the containing folder | Written, not yet run on Linux. Without `xdg-open` the actions are shown disabled. |
+| Windows | PowerShell 7 (`pwsh`): the default app, `explorer /select,`, the default browser | Written, not yet run on Windows. Without `pwsh` the actions are shown disabled. |
+
+On every platform you can put [your own handler](#your-own-handler) in front of the built-in one.
 
 ## Install
 
@@ -41,6 +48,14 @@ trough emit --source monitor --kind ci --title 'Build failed' \
 ```
 
 `trough post --file story.json` accepts the full [v1 format](docs/story-v1.schema.json), and `trough validate --file story.json` checks a story without storing it. Required fields are `v`, `id`, `source`, `kind`, `title`, `summary`, `occurred_at` and `severity`. Unknown top-level fields are invalid. `source` and `provenance` are claims shown to the operator, not authority. `extensions` are inert. `group_key` groups cards within the same source and kind; each story keeps its own state.
+
+Links carry the attach points for actions. Each link has an `id`, a `label` and either a `url` or an absolute `path`, and may say what it is:
+
+```json
+{"id": "report", "label": "Weekly report", "path": "/srv/reports/weekly.md", "role": "report", "media_type": "text/markdown"}
+```
+
+`role` is a short key. The conventional values are `report`, `document`, `artifact`, `log`, `screenshot`, `pr`, `issue` and `source`; other keys are allowed. `media_type` is a standard MIME type such as `text/markdown`, `application/pdf` or `image/png`. Both are optional. Stories stay small: link to a file, never embed it.
 
 Choose the lowest severity that fits:
 
@@ -71,9 +86,9 @@ In the pane:
 | `d` | Done / undo |
 | `D` | Delete, after a confirmation in the pane |
 | `z` | Snooze for one hour |
-| `a` | Review the story's first available action |
+| `a` | Review the story's first available action, declared or offered |
 
-The pane opens in **Inbox**: stories that are unread or still need action, including read stories with unfinished actions. The filter picker also offers **Active unfinished** (neither done nor snoozed) and the state toggles `1` to `4` for unread, needs action, done and snoozed. State toggles combine with AND. Values picked within one field (source, kind, severity, subject) combine with OR, and fields, state and search combine with AND. Unread means no read time, needs action means the story has actions and is not done, and snoozed means its snooze time is in the future. The header shows the active view and filters. Times are relative in the list and exact in the detail. The pane reloads when the folder changes, including changes made by the CLI or another copy of the pane.
+The pane opens in **Inbox**: stories that are unread or still need action, including read stories with unfinished actions. The filter picker also offers **Active unfinished** (neither done nor snoozed) and the state toggles `1` to `4` for unread, needs action, done and snoozed. State toggles combine with AND. Values picked within one field (source, kind, severity, subject) combine with OR, and fields, state and search combine with AND. Unread means no read time, needs action means the story declares actions and is not done, and snoozed means its snooze time is in the future. The header shows the active view and filters. Times are relative in the list and exact in the detail. The pane reloads when the folder changes, including changes made by the CLI or another copy of the pane.
 
 From the CLI:
 
@@ -95,28 +110,73 @@ The pane prunes read stories when it opens and hourly while open. `trough prune 
 
 ## Actions
 
-A story may declare actions with an `id`, a `label`, a `handler` ID and typed `args`. It cannot declare a command or an executable. The handler must already be installed on your machine, as a built-in, an operator handler, or part of a pack.
+Actions reach a story in two ways.
 
-Clicking an action opens a review sheet with the source claim and the exact effects. A separate **Confirm action** click runs it once and writes a receipt. From the CLI, `trough review STORY ACTION` prints the sheet and a token, and `trough run TOKEN` runs it. A failed or uncertain action stays visible in `receipts/` and is never retried automatically.
+- **Offered by a pack.** Each installed pack looks at a story when it is shown and may attach actions to it, usually to its links. The built-in core pack offers **Open** on every link and **Show in Finder** (or the file manager) on every path link. The reading-list pack offers **Add to reading list** on report and document links. The producer does not need to know these actions exist, and a story published last week gains an action the day you install the pack that offers it.
+- **Declared by the story.** A story may declare `actions` with an `id`, a `label`, a `handler` ID and typed `args`. This is for actions only the source can describe, such as answering a decision. A story cannot declare a command or an executable; the handler must already be installed on your machine.
 
-An action whose handler is not installed, or cannot run right now (a missing tool, another operating system, a decision with no answer route), is shown disabled with the reason beside it. `trough ls --json` reports the same thing per story as `action_status`.
+Offers never change the stored story. They are worked out again whenever stories are listed, when an action is reviewed and once more when it runs, so an offer that is gone by then (the pack was removed, a fact changed) is refused. Only declared actions count toward "needs action".
 
-`trough actions` lists every installed handler with its arguments and whether it can run, so a producer or an agent can see what it may attach to a story:
+Clicking an action opens a review sheet with the source claim, where the action came from (the story, or the pack that offered it) and the exact effects. A separate **Confirm action** click runs it once and writes a receipt. From the CLI, `trough review STORY ACTION` prints the sheet and a token, and `trough run TOKEN` runs it; `trough ls --json` lists each story's `offers` with their action IDs. A failed or uncertain action stays visible in `receipts/` and is never retried automatically.
+
+An action that cannot run right now (its handler is not installed, a tool is missing, a decision has no answer route) is shown disabled with the reason beside it. `trough ls --json` reports the same per story, as `action_status` for declared actions and `available` on each offer.
+
+`trough actions` lists every installed handler with its arguments and whether it can run, then each pack's rules for attaching actions:
 
 ```
 $ trough actions
 add_to_reading_list  pack reading-list  available  link:string note?:string
 answer_decision      built-in           available  -
-open_file            built-in           available  link:string
-open_path            built-in           available  link:string
-open_url             built-in           available  link:string
+open_file            pack core          available  link:string
+open_path            pack core          available  link:string
+open_url             pack core          available  link:string
+augment  pack core          URL link: Open (open_url)
+augment  pack core          Path link: Open (open_file), and Show in file manager (open_path)
+augment  pack reading-list  Link with role report or document, or a text, HTML or PDF media type: Add to reading list ...
 ```
 
-Add `--json` for the full argument schema and declared effects. [docs/handlers.md](docs/handlers.md) covers the built-ins, operator command handlers and decision answers.
+Add `--json` for the full argument schemas, declared effects and facts. [docs/handlers.md](docs/handlers.md) covers operator command handlers, decision answers and writing a pack.
+
+### Your own handler
+
+Open and reveal run a small handler program. You can write your own, which Trough asks first, so a file or link opens the way you want on this computer. Whatever it leaves alone falls through to the built-in handler. It is off until you turn it on.
+
+1. Write it at `~/.config/herdr-app/trough/handler` (`$HERDR_APP_HOME/trough/handler` if that is set; `trough\handler.ps1`, a PowerShell script, on Windows). It lives outside the mod's folder, so reinstalling the mod keeps it. Any language; it must be executable (`chmod 755`), owned by you and not writable by anyone else, and so must every folder above it.
+2. Turn it on with `trough handler on`. Trough checks it and records its real path and SHA-256 beside it in `trust.json`. `trough handler` shows the state.
+3. After you edit it, Trough stops running it: the pane shows a banner with **Use it** and **Turn off**, `trough packages check` reports it, and the built-in handler acts meanwhile. `trough handler on` approves the new version; `trough handler off` goes back to the built-in handler.
+
+Trough runs it with separate arguments, never through a shell string. The item is always the last argument, right after `--`:
+
+| Arguments | When |
+| --- | --- |
+| `open -- PATH` | Open a file or folder |
+| `reveal -- PATH` | Show a path in the file manager; also used instead of `open` for anything that could run (an executable, a script, an app) |
+| `open-url -- URL` | Open an http or https link |
+
+Exit 0 when done, 10 for "not handled" (the built-in handler runs), and anything else for an error; the first line of stderr is shown. Trough waits 15 seconds, so start long-running programs in the background. The handler gets only the path or URL: titles, summaries and anything else in a story never reach it. The review sheet lists the exact programs and arguments, including your handler's path and the first characters of its SHA-256.
+
+An example that opens markdown in VS Code and leaves everything else to the built-in handler:
+
+```sh
+#!/bin/sh
+# ~/.config/herdr-app/trough/handler
+verb=$1
+for item; do :; done   # the item: the last argument
+case $verb in
+open)
+	case $item in
+	*.md | *.markdown) exec code "$item" ;;
+	esac
+	;;
+esac
+exit 10   # not handled: the built-in handler does it
+```
+
+The built-in handlers are [`mods/trough/handlers/macos.sh`](mods/trough/handlers/macos.sh), [`linux.sh`](mods/trough/handlers/linux.sh) and [`windows.ps1`](mods/trough/handlers/windows.ps1). They are replaced when the mod is reinstalled, so change behaviour with your own handler rather than by editing them.
 
 ## Packs
 
-A pack is a JavaScript module that adds action handlers, a producer that publishes stories on an interval, or both. Trough loads only the packs you list, and you manage that list with `trough packages`:
+A pack is a JavaScript module that can add action handlers, attach actions to stories, and run a producer that publishes stories on an interval. Trough loads the built-in core pack and the packs you list, and you manage that list with `trough packages`:
 
 ```sh
 trough packages                          # what is listed, what each provides, and its health
@@ -127,27 +187,35 @@ trough packages remove NAME|PATH
 
 ```
 $ trough packages
+core  ok  (built in)
+  handlers: open_file, open_path, open_url
+  your handler: off
+  augments: URL link: Open (open_url); Path link: Open (open_file), and Show in file manager (open_path)
+  producer: none
 reading-list  ok  /absolute/path/to/herdr-trough/packages/reading-list/index.js
   handlers: add_to_reading_list
+  augments: Link with role report or document, or a text, HTML or PDF media type: Add to reading list ...
   producer: none
 ```
 
-`add` takes a pack folder or module file, loads it once to make sure it works with the options given, and only then records its absolute path. Running `add` again with `--options-file` replaces that pack's options. The list lives in `$TROUGH_DIR/handlers.json`; these commands rewrite only its `packages` field and leave your other settings alone. You can still edit the file by hand.
+`add` takes a pack folder or module file, loads it once to make sure it works with the options given, and only then records its absolute path. Running `add` again with `--options-file` replaces that pack's options. The list lives in `$TROUGH_DIR/handlers.json`; these commands rewrite only its `packages` field and leave your other settings alone. You can still edit the file by hand. One pack that fails does not stop the others: its additions are dropped, and the problem is shown in the pane header and by `trough packages check`.
+
+The core pack is on by default. `trough packages remove core` turns it off (it records `"core": false`), which removes the open and reveal actions and clickable paths; `trough packages add core` restores it.
 
 A pack is trusted local code that runs with your permissions. Add only packs you have read.
 
-This repository ships two packs, both optional:
+Besides the core pack, this repository ships two packs, both optional:
 
 | Pack | Adds | Needs |
 | --- | --- | --- |
-| [`packages/reading-list`](packages/reading-list/index.js) | The `add_to_reading_list` action: hands a story link to a reading list. | An `rl` command on `PATH` that accepts `rl add TARGET --from NAME --if-new [--note TEXT]`. Without it the action is shown disabled. Set `{"rl":"/absolute/path/to/rl"}` as the pack's options to name the command explicitly. |
+| [`packages/reading-list`](packages/reading-list/index.js) | **Add to reading list** on links with role `report` or `document`, or a text, HTML or PDF media type. | An `rl` command on `PATH` that accepts `rl add TARGET --from NAME --if-new [--note TEXT]`. Without it the action is shown disabled. Options: `{"rl":"/absolute/path/to/rl"}` names the command explicitly, and `{"roles":["report","document","log"]}` changes which link roles get the action. |
 | [`packages/firstmate`](docs/firstmate.md) | Stories and actions for a Firstmate home. | A Firstmate home. Skip this pack if you do not use Firstmate; nothing else depends on it. |
 
-Keep the checkout these packs are loaded from: the list stores their absolute paths. [docs/handlers.md](docs/handlers.md#packs) describes how to write a pack.
+Keep the checkout these packs are loaded from: the list stores their absolute paths. [docs/handlers.md](docs/handlers.md#packs) describes how to write a pack, with [a complete example](docs/example-pack/index.js).
 
 ## Data folder
 
-`$TROUGH_DIR` holds `inbox/`, the immutable `store/`, per-story `state/`, `rejected/`, `reviews/`, `receipts/`, `answers/<source-id>/`, `tombstones/`, and the operator files `handlers.json` and `trough.json`. Treat `handlers.json` and any pack it lists as code: whoever can write them can run commands as you.
+`$TROUGH_DIR` holds `inbox/`, the immutable `store/`, per-story `state/`, `rejected/`, `reviews/`, `receipts/`, `answers/<source-id>/`, `tombstones/`, and the operator files `handlers.json` and `trough.json`. Treat `handlers.json` and any pack it lists as code: whoever can write them can run commands as you. Your own open handler and its `trust.json` live in the Herdr home instead, under `trough/`.
 
 ## Develop
 
