@@ -1,4 +1,4 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { post, list } from '../mods/trough/core/store.js';
 import { review, runReviewed, annotate } from '../mods/trough/core/actions.js';
+
+// Firstmate and the stand-in Firstmate commands under fixtures/ are shell programs.
+const test=process.platform==='win32'?name=>nodeTest(name,{skip:'Firstmate runs on POSIX systems only'},()=>{}):nodeTest;
 
 process.env.HERDR_APP_HOME=await fs.mkdtemp(path.join(os.tmpdir(),'trough-home-'));
 import { sync } from '../packages/firstmate/sync.js';

@@ -15,7 +15,14 @@
 #Requires -Version 7.0
 $ErrorActionPreference = 'Stop'
 
-function Say([string]$text) { [Console]::Out.Write($text + "`n") }
+# Trough reads the answer as UTF-8. The bytes go to the stream directly, so a path with letters
+# outside the console's code page (an accented user folder, say) arrives unchanged.
+function Say([string]$text) {
+	$bytes = [Text.UTF8Encoding]::new($false).GetBytes($text + "`n")
+	$out = [Console]::OpenStandardOutput()
+	$out.Write($bytes, 0, $bytes.Length)
+	$out.Flush()
+}
 
 # The real path of an absolute local path: the drive letter upper case, each name as it is on
 # disk, and every link (symlink or junction) on the way resolved, the last name's too when

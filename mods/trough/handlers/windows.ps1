@@ -14,8 +14,16 @@ Set-StrictMode -Version 3.0
 
 $dry = $env:TROUGH_DRY_RUN -eq '1'
 
+# Trough reads what this prints as UTF-8. The bytes go to the stream directly, so the console's
+# code page (or having no console at all) does not change them.
+function Write-Line([IO.Stream]$to, [string]$text) {
+	$bytes = [Text.UTF8Encoding]::new($false).GetBytes($text + "`n")
+	$to.Write($bytes, 0, $bytes.Length)
+	$to.Flush()
+}
+
 function Fail([string]$why, [int]$code = 1) {
-	[Console]::Error.WriteLine($why)
+	Write-Line ([Console]::OpenStandardError()) $why
 	exit $code
 }
 
@@ -41,6 +49,8 @@ $item = $a[2]
 
 function Local-Path {
 	if ($item -notmatch '^[A-Za-z]:\\' -or $item.Contains('"')) { Fail "not a local path: $item" 2 }
+	# Explorer shows another folder, without an error, when asked to select something that is gone.
+	if (-not (Test-Path -LiteralPath $item)) { Fail "$item does not exist" }
 	return $item
 }
 
@@ -49,7 +59,7 @@ switch -CaseSensitive ($verb) {
 		$p = Local-Path
 		if (Test-Runs $p) { Fail "$([IO.Path]::GetFileName($p)) could run, so it is not opened" }
 		if ($dry) {
-			[Console]::Out.WriteLine("would: open $p")
+			Write-Line ([Console]::OpenStandardOutput()) ("would: open $p")
 			exit 0
 		}
 		try {
@@ -57,7 +67,7 @@ switch -CaseSensitive ($verb) {
 			$si.UseShellExecute = $true
 			[void][Diagnostics.Process]::Start($si)
 		} catch {
-			Fail "Windows could not open it: $($_.Exception.Message)"
+			Fail "Windows could not open it: $($_.Exception.GetBaseException().Message)"
 		}
 		exit 0
 	}
@@ -67,7 +77,7 @@ switch -CaseSensitive ($verb) {
 		$explorer = Join-Path $env:SystemRoot 'explorer.exe'
 		$line = "/select,`"$p`""
 		if ($dry) {
-			[Console]::Out.WriteLine("would: $explorer $line")
+			Write-Line ([Console]::OpenStandardOutput()) ("would: $explorer $line")
 			exit 0
 		}
 		$si = [Diagnostics.ProcessStartInfo]::new($explorer, $line)
@@ -75,7 +85,7 @@ switch -CaseSensitive ($verb) {
 		try {
 			[void][Diagnostics.Process]::Start($si)
 		} catch {
-			Fail "Explorer did not start: $($_.Exception.Message)"
+			Fail "Explorer did not start: $($_.Exception.GetBaseException().Message)"
 		}
 		exit 0
 	}
@@ -83,7 +93,7 @@ switch -CaseSensitive ($verb) {
 		$u = $null
 		if (-not [Uri]::TryCreate($item, [UriKind]::Absolute, [ref]$u) -or $u.Scheme -notin @('http', 'https')) { Fail 'only http and https links are opened' 2 }
 		if ($dry) {
-			[Console]::Out.WriteLine("would: open-url $($u.AbsoluteUri)")
+			Write-Line ([Console]::OpenStandardOutput()) ("would: open-url $($u.AbsoluteUri)")
 			exit 0
 		}
 		try {
@@ -91,7 +101,7 @@ switch -CaseSensitive ($verb) {
 			$si.UseShellExecute = $true
 			[void][Diagnostics.Process]::Start($si)
 		} catch {
-			Fail "Windows could not open the link: $($_.Exception.Message)"
+			Fail "Windows could not open the link: $($_.Exception.GetBaseException().Message)"
 		}
 		exit 0
 	}

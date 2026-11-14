@@ -29,7 +29,8 @@ uri() {
 # running as long as the app it started, which would outlive Trough's time limit. Exits with
 # xdg-open's status (and its message) when it finished within that time, else 0. stderr goes
 # through a file so the caller does not wait on a pipe the opener keeps open. $2 is the message
-# for a missing xdg-open.
+# for a missing xdg-open. Trough shows the first line of stderr: when xdg-open found no program
+# (status 3) it prints one "not found" line per browser it tried, so the plain reason goes first.
 xdg() {
 	command -v xdg-open >/dev/null 2>&1 || {
 		echo "$2" >&2
@@ -49,7 +50,8 @@ xdg() {
 	fi
 	wait "$p"
 	s=$?
-	if [ -s "$e" ]; then cat "$e" >&2; elif [ $s = 3 ]; then echo "xdg-open found no program to open it with" >&2; fi
+	[ $s = 3 ] && echo "xdg-open found no program to open it with" >&2
+	cat "$e" >&2
 	rm -f "$e"
 	# 10 means "not handled" to Trough; xdg-open's own statuses are 1 to 4.
 	[ $s = 10 ] && s=1

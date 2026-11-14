@@ -7,6 +7,10 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { post, stored, list } from '../mods/trough/core/store.js';
 import { review, runReviewed, receipts, annotate, listActions } from '../mods/trough/core/actions.js';
+import { windows, noop } from './support.mjs';
+
+// Paths written in a story's text are recognised in POSIX form only (/... and ~/...).
+const textPaths=windows&&'paths in story text are recognised in POSIX form only';
 
 // Keep the person's own open handler (under the Herdr home) out of these tests.
 process.env.HERDR_APP_HOME=await fs.mkdtemp(path.join(os.tmpdir(),'trough-home-'));
@@ -34,9 +38,9 @@ test('command handler requires review, uses typed argv without interpolation, an
 
 test('changed registry invalidates a reviewed action',async()=>{
   const dir=await root(),s={...base(),actions:[{id:'a',label:'A',handler:'test'}]}; await add(dir,s);
-  await config(dir,{handlers:{test:{kind:'command',executable:'/usr/bin/true',argv:[],args:{},effects:['Do a thing']}}});
+  await config(dir,{handlers:{test:noop(['Do a thing'])}});
   const sheet=await review(dir,s.id,'a');
-  await config(dir,{handlers:{test:{kind:'command',executable:'/usr/bin/false',argv:[],args:{},effects:['Do a different thing']}}});
+  await config(dir,{handlers:{test:noop(['Do a different thing'])}});
   await assert.rejects(runReviewed(dir,sheet.token),/story, offer or handler changed/);
   assert.equal((await receipts(dir,s.id)).length,0);
 });
@@ -61,7 +65,7 @@ test('built-in path reveal is explicit and a decision needs a story-hash route',
   assert.equal((await runReviewed(dir,second.token)).outcome,'failed');
 });
 
-test('local open plans open documents and folders but reveal runnable paths',async()=>{
+test('local open plans open documents and folders but reveal runnable paths',{skip:textPaths},async()=>{
   const dir=await root(),folder=path.join(dir,'folder'),document=path.join(dir,'report.pdf');
   await fs.mkdir(folder);
   await fs.writeFile(document,'report');
@@ -83,7 +87,7 @@ test('local open plans open documents and folders but reveal runnable paths',asy
   await assert.rejects(review(dir,s.id,'__open_local_path',{path:document}),/Path does not exist/);
 });
 
-test('local open expands home paths and checks symlink targets',async()=>{
+test('local open expands home paths and checks symlink targets',{skip:textPaths},async()=>{
   const dir=await root(),homeFile=path.join(os.homedir(),`.trough-open-${crypto.randomBytes(8).toString('hex')}.txt`);
   const script=path.join(dir,'script.sh'),alias=path.join(dir,'alias.txt');
   try {
@@ -100,7 +104,7 @@ test('local open expands home paths and checks symlink targets',async()=>{
 
 test('CLI review and run are separate operations with a receipt',async()=>{
   const dir=await root(),s={...base(),actions:[{id:'a',label:'A',handler:'noop'}]}; await add(dir,s);
-  await config(dir,{handlers:{noop:{kind:'command',executable:'/usr/bin/true',argv:[],args:{},effects:['Run the local noop']}}});
+  await config(dir,{handlers:{noop:noop(['Run the local noop'])}});
   const cli=path.resolve('mods/trough/bin/trough');
   const invoke=(...args)=>spawnSync(process.execPath,[cli,'--dir',dir,...args],{encoding:'utf8'});
   const first=invoke('review',s.id,'a'); assert.equal(first.status,0);

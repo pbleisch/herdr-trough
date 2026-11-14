@@ -10,12 +10,12 @@ import { post, list } from '../mods/trough/core/store.js';
 import { review, runReviewed, annotate } from '../mods/trough/core/actions.js';
 import { listPacks } from '../mods/trough/core/packages.js';
 import { userHandler, turnOn, turnOff, checkHandler, openPlan, runChain, userLocation, builtInFile } from '../mods/trough/core/open-handlers.js';
+import { posix } from './support.mjs';
 
 // The person's handler must sit below folders nobody else can write, which rules out a shared /tmp:
 // each test gets a private Herdr home under the home folder and removes it afterwards.
 const project=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const cli=path.join(project,'mods','trough','bin','trough');
-const posix=process.platform!=='win32';
 async function home(t) {
   const dir=await fs.mkdtemp(path.join(await fs.realpath(os.homedir()),'.trough-handler-test-'));
   t.after(()=>fs.rm(dir,{recursive:true,force:true}));
@@ -42,6 +42,72 @@ test('built-in handlers refuse malformed calls and leave unknown verbs alone',{s
     assert.deepEqual([link.status,link.stderr.trim()],[2,'only http and https links are opened'],name);
   }
   assert.equal(path.basename(builtInFile()),process.platform==='darwin'?'macos.sh':'linux.sh');
+});
+
+// linux.sh is plain sh, so its handling of xdg-open is tested on every POSIX system: PATH holds only
+// the few tools the script needs and a stand-in xdg-open that records its arguments. There is no
+// gdbus on that PATH, so reveal takes the route without a file manager on D-Bus.
+test('the Linux handler passes the item to xdg-open unchanged and turns its results into exit statuses and messages',{skip:!posix},async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'trough-linux-')),tools=path.join(dir,'tools'),log=path.join(dir,'xdg-open.log');
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  await fs.mkdir(tools);
+  for(const name of ['mktemp','sleep','rm','cat','dirname']) {
+    const found=['/usr/bin','/bin'].map(d=>path.join(d,name)).find(f=>spawnSync('/bin/sh',['-c','test -x "$0"',f]).status===0);
+    assert.ok(found,`${name} not found`);
+    await fs.symlink(found,path.join(tools,name));
+  }
+  const run=(mode,...argv)=>spawnSync('/bin/sh',[path.join(project,'mods','trough','handlers','linux.sh'),...argv],{encoding:'utf8',env:{PATH:tools,XO_LOG:log,XO_MODE:mode}});
+  const got=async()=>{ const lines=(await fs.readFile(log,'utf8')).split('\n').slice(0,-1); await fs.rm(log); return lines; };
+  const file=path.join(dir,"it's a note.md"),url='https://example.com/a?b=1&c=$(touch never)#part';
+  const absent='xdg-open is not installed (it comes with xdg-utils)';
+  assert.deepEqual([run('ok','open','--',file).status,run('ok','open','--',file).stderr.trim()],[127,absent]);
+  assert.deepEqual([run('ok','open-url','--',url).status,run('ok','reveal','--',file).stderr.trim()],[127,`no file manager answered, and ${absent}`]);
+  await fs.writeFile(path.join(tools,'xdg-open'),`#!/bin/sh
+printf '%s\n' "$#" "$@" >> "$XO_LOG"
+case $XO_MODE in
+none) echo "xdg-open: 882: www-browser: not found" >&2; exit 3 ;;
+gone) echo "xdg-open: file '$1' does not exist" >&2; exit 2 ;;
+ten) exit 10 ;;
+slow) sleep 5 ;;
+esac
+exit 0
+`,{mode:0o755});
+  assert.equal(run('ok','open','--',file).status,0);
+  assert.deepEqual(await got(),['1',file]);
+  assert.equal(run('ok','open-url','--',url).status,0);
+  assert.deepEqual(await got(),['1',url]);
+  assert.equal(run('ok','reveal','--',file).status,0);
+  assert.deepEqual(await got(),['1',dir]);
+  // No program for this type: the plain reason is the first line, before xdg-open's own output.
+  const none=run('none','open','--',file);
+  assert.deepEqual([none.status,none.stderr.split('\n')[0]],[3,'xdg-open found no program to open it with']);
+  const gone=run('gone','open','--',file);
+  assert.deepEqual([gone.status,gone.stderr.trim()],[2,`xdg-open: file '${file}' does not exist`]);
+  // 10 would tell Trough "not handled"; an opener that happens to exit 10 is a failure.
+  assert.equal(run('ten','open','--',file).status,1);
+  // An opener that stays running as long as the app it started is not waited for.
+  const started=Date.now(),slow=run('slow','open','--',file);
+  assert.equal(slow.status,0);
+  assert.ok(Date.now()-started<4500,'returned before the opener finished');
+});
+
+// windows.ps1 runs for real here, with TROUGH_DRY_RUN=1 wherever it would start a program.
+test('the Windows handler refuses what could run and what is not local, and names what it would start',{skip:posix&&'needs Windows and PowerShell 7'},async t=>{
+  const dir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'trough-windows-')));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const run=(env,...argv)=>{ const r=spawnSync('pwsh',['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',builtInFile(),...argv],{encoding:'utf8',env:{...process.env,TROUGH_DRY_RUN:'1',...env}}); return [r.status,r.stdout.trim(),r.stderr.trim()]; };
+  const note=path.join(dir,"it's a nöte 日本.md"),script=path.join(dir,'build.bat'),explorer=path.join(process.env.SystemRoot,'explorer.exe');
+  await fs.writeFile(note,'note'); await fs.writeFile(script,'@echo hi');
+  assert.equal(path.basename(builtInFile()),'windows.ps1');
+  assert.deepEqual(run({},'open','--',note),[0,`would: open ${note}`,'']);
+  assert.deepEqual(run({},'reveal','--',note),[0,`would: ${explorer} /select,"${note}"`,'']);
+  assert.deepEqual(run({},'reveal','--',script),[0,`would: ${explorer} /select,"${script}"`,'']);
+  assert.deepEqual(run({},'open','--',script),[1,'','build.bat could run, so it is not opened']);
+  assert.deepEqual(run({},'open','--',path.join(dir,'gone.txt')),[1,'',`${path.join(dir,'gone.txt')} does not exist`]);
+  for(const item of ['notes.txt','\\\\server\\share\\notes.txt',note.replaceAll('\\','/'),'C:\\a" /e,C:\\Windows']) assert.deepEqual(run({},'reveal','--',item),[2,'',`not a local path: ${item}`]);
+  assert.deepEqual(run({},'open-url','--','https://example.com/a?b=1&c=$(touch never)'),[0,'would: open-url https://example.com/a?b=1&c=$(touch%20never)','']);
+  for(const item of ['file:///C:/Windows/System32/calc.exe','javascript:alert(1)','C:\\Windows\\System32\\calc.exe']) assert.deepEqual(run({},'open-url','--',item),[2,'','only http and https links are opened']);
+  assert.deepEqual([run({},'preview','--',note)[0],run({},'open',note)[0],run({},'open','--',note,'extra')[0]],[10,2,2]);
 });
 
 test('your handler is off until turned on, runs first with separate arguments, and is stopped when it changes',{skip:!posix},async t=>{

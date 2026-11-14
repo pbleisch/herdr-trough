@@ -10,6 +10,7 @@ import { post, list } from '../mods/trough/core/store.js';
 import { review, runReviewed, annotate, listActions } from '../mods/trough/core/actions.js';
 import { listPacks, checkPacks, addPack, removePack } from '../mods/trough/core/packages.js';
 import { rules as readingListRules } from '../packages/reading-list/index.js';
+import { windows, posix, noop } from './support.mjs';
 
 // Keep the person's own open handler (under the Herdr home) out of these tests.
 process.env.HERDR_APP_HOME=await fs.mkdtemp(path.join(os.tmpdir(),'trough-home-'));
@@ -21,6 +22,8 @@ const root=async()=>fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'trough-p
 const readConfig=async dir=>JSON.parse(await fs.readFile(path.join(dir,'handlers.json'),'utf8'));
 const story=()=>({v:1,id:crypto.randomBytes(16).toString('hex'),source:{id:'example',label:'Example'},kind:'report',title:'Result',summary:'Ready',occurred_at:'2026-11-11T18:00:00Z',severity:'info',
   links:[{id:'result',label:'Result',url:'https://example.com/result'}],actions:[{id:'save',label:'Add to reading list',handler:'add_to_reading_list',args:{link:'result',note:'Read this'}}]});
+// A stand-in rl that records its arguments. It is a shell script, so tests that run it skip Windows.
+const runsRl=windows&&'the stand-in rl is a shell script';
 async function fakeRl(dir) {
   const tools=path.join(dir,'tools'),log=path.join(dir,'rl.log');
   await fs.mkdir(tools);
@@ -28,7 +31,7 @@ async function fakeRl(dir) {
   return {rl:path.join(tools,'rl'),log};
 }
 
-test('reading-list actions need the pack, are disabled with a reason without rl, and run rl with separate argv',async()=>{
+test('reading-list actions need the pack, are disabled with a reason without rl, and run rl with separate argv',{skip:runsRl},async()=>{
   const dir=await root(),s=story();
   await post(dir,Buffer.from(JSON.stringify(s)+'\n'));
   assert.equal((await annotate(dir,await list(dir)))[0].action_status.save.reason,'handler add_to_reading_list is not installed');
@@ -63,7 +66,7 @@ test('packages add and remove edit only the pack list and keep every other field
   await fs.writeFile(pack,`export function handlers(options) { if(!options.target) throw new Error('notes pack needs options.target');
   return {record_note:{args:{},effects:['Record a note'],plan:()=>({effects:['Record a note in '+options.target]}),run:()=>'ok'}}; }`);
   await fs.writeFile(other,"export const name='pulse'; export function producer() { return {name:'Pulse',interval_seconds:60,run() {}}; }");
-  const kept={v:1,handlers:{noop:{kind:'command',executable:'/usr/bin/true',argv:[],args:{},effects:['Run noop']}},answer_routes:{},operator_note:'kept as written'};
+  const kept={v:1,handlers:{noop:noop(['Run noop'])},answer_routes:{},operator_note:'kept as written'};
   await fs.writeFile(path.join(dir,'handlers.json'),JSON.stringify(kept));
   await assert.rejects(addPack(dir,pack),/did not load, so nothing was changed: notes pack needs options.target \(pass its options with --options-file FILE\)/);
   assert.deepEqual(await readConfig(dir),kept);
@@ -83,7 +86,7 @@ test('packages add and remove edit only the pack list and keep every other field
   assert.deepEqual(await removePack(dir,other),{removed:'pulse',path:other});
   assert.deepEqual(await readConfig(dir),{...kept,packages:[]});
   assert.deepEqual((await fs.readdir(dir)).filter(n=>n.includes('.tmp')),[]);
-  assert.equal((await fs.stat(path.join(dir,'handlers.json'))).mode&0o077,0);
+  if(posix) assert.equal((await fs.stat(path.join(dir,'handlers.json'))).mode&0o077,0);
 });
 
 test('packages add refuses a missing path and an unreadable configuration without writing',async()=>{
@@ -143,7 +146,7 @@ test('CLI manages packs and lists installed actions',async()=>{
   assert.equal(Object.hasOwn(await readConfig(dir),'core'),false);
 });
 
-test('the reading-list pack offers its action on report, document and readable links only',async()=>{
+test('the reading-list pack offers its action on report, document and readable links only',{skip:runsRl},async()=>{
   const dir=await root(),{rl}=await fakeRl(dir);
   await fs.writeFile(path.join(dir,'handlers.json'),JSON.stringify({v:1,core:false}));
   await addPack(dir,readingList,{rl});

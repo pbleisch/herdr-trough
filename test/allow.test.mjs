@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { post, stored } from '../mods/trough/core/store.js';
 import { review, act, runReviewed, receipts, listAllowed, revokeAllowed } from '../mods/trough/core/actions.js';
 import { turnOn, turnOff, userLocation } from '../mods/trough/core/open-handlers.js';
+import './support.mjs';
 
 const project=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const cli=path.join(project,'mods','trough','bin','trough');
