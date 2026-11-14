@@ -57,7 +57,8 @@ As an overlay the pane is 640 by 560; docked in a layout it defaults to 420 wide
 **Watch out**
 
 - The pane needs `node` on the app's `PATH`, and the CLI must sit at `mods/trough/bin/trough` under the app home with `core/` beside it. If the mod folder is renamed, change the `cli` path in `main.js`.
-- Open and reveal have been run on macOS only; the Linux and Windows handlers are written but untested.
+- The pane has been run on macOS only. The Linux and Windows handlers were tested from the CLI (see the README's Status section), not yet from a pane on those systems.
+- Paths in a summary or prompt are recognised in POSIX form only (`/...`, `~/...`); a Windows path is clickable only as a link.
 - `ls --json` returns `action_status` (declared actions), `offers` (pack actions, each with `available` and `reason`) and `badges` per story. Use them; do not guess from the handler name. An offer's ID has the form `pack.id` and is what `review` takes.
 - The pane never decides that an action may skip the sheet. It calls `act` and shows whatever comes back, and it shows the checkbox only when the sheet carries `always_allow`.
 - A person's own handler is never turned on by the mod itself, only by `Use it` after it changed or by `trough handler on`.

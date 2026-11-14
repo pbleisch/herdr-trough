@@ -12,15 +12,22 @@ Trough is a local activity feed for [Herdr](https://herdr.dev) desktop. Tools an
 
 ## Status
 
-Version 0.1.0. The feed and the CLI need only Node.js (developed and tested on Node.js 26). The pane needs Herdr desktop.
+Version 0.2.0. The feed and the CLI need only Node.js (developed on Node.js 26; the tests also pass on Node.js 22). The pane needs Herdr desktop and has been used on macOS only.
 
 | Platform | Open and reveal actions | State |
 | --- | --- | --- |
-| macOS | `open`, and `open -R` for Finder | Developed and tested here. |
-| Linux | `xdg-open`; reveal asks the file manager over D-Bus (`gdbus`), else opens the containing folder | Written, not yet run on Linux. Without `xdg-open` the actions are shown disabled. |
-| Windows | PowerShell 7 (`pwsh`): the default app, `explorer /select,`, the default browser | Written, not yet run on Windows. Without `pwsh` the actions are shown disabled. |
+| macOS | `open`, and `open -R` for Finder | Developed and used here, with the pane. |
+| Linux | `xdg-open`; reveal asks the file manager over D-Bus (`gdbus`), else opens the containing folder | Tested from the CLI on a server without a desktop. Not yet used on a Linux desktop. Without `xdg-open` the actions are shown disabled. |
+| Windows | PowerShell 7 (`pwsh`): the default app, `explorer /select,`, the default browser | Tested from the CLI up to the point of starting the app. Not yet used on a Windows desktop. Without `pwsh` the actions are shown disabled. |
 
 On every platform you can put [your own handler](#your-own-handler) in front of the built-in one.
+
+What the Linux and Windows tests covered, on 2026-11-13:
+
+- **Linux** (Ubuntu 24.04, `sh` is dash, no desktop). The test suite passes with and without `xdg-open` installed. Without it, `trough actions`, `trough ls --json` and a review all report "xdg-open is not installed (it comes with xdg-utils)". With a stand-in `xdg-open` that records its arguments, open, open-url and reveal ran through `trough review` and `trough run` and passed paths and URLs unchanged, including spaces, quotes and `$(...)`. Reveal called a stand-in `org.freedesktop.FileManager1` service on the session bus with correct `file://` URIs for names with spaces, quotes, percent signs, non-ASCII letters and a newline, and fell back to `xdg-open` on the folder when no file manager answered. The real `xdg-open` 1.1.3 had nothing to open with on that machine, and the action failed with "xdg-open found no program to open it with". An opener that keeps running is left alone after 3 seconds. No real file manager, browser or desktop app was started.
+- **Windows** (Windows 11 build 26200, PowerShell 7.6, over SSH). The test suite passes; tests that need a POSIX shell (the Firstmate pack, the stand-in `rl`, a shell script as your own handler) are skipped there. `windows.ps1` ran through `trough review` and `trough run` with `TROUGH_DRY_RUN=1`, which prints the program and arguments instead of starting them: names with spaces, quotes, `;&$()`, `%TEMP%` and non-ASCII letters arrived unchanged, and it refused anything that could run (`.bat`, `.exe`, `.ps1`, `.lnk`, `.js`, `.msi` and more), relative, UNC and forward-slash paths, a path with a double quote, a path that does not exist, and links that are not http or https. Your own handler was turned on, ran first, was stopped after an edit, and was refused when `BUILTIN\Users` could write the file or its folder. An SSH session has no desktop, so the last step (the app, Explorer or the browser appearing) was not run.
+
+Paths written in a story's summary or prompt are clickable only in POSIX form (`/...` and `~/...`). On Windows, give the path as a link instead.
 
 ## Install
 
@@ -243,7 +250,7 @@ npm test
 herdr-app check mods/trough
 ```
 
-Both use local files only. The tests need no Herdr, no network and no installed pack.
+Both use local files only. The tests need no Herdr, no network and no installed pack, and they start no app: on Linux a stand-in `xdg-open` goes first on `PATH`, and the Windows handler runs with `TROUGH_DRY_RUN=1`. Tests that need a POSIX shell are skipped on Windows.
 
 ## License
 
