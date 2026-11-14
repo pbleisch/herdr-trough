@@ -1,4 +1,4 @@
-import { View, div, svg, image, Background } from 'gpui-kit';
+import { View, div, svg, image } from 'gpui-kit';
 import { v_flex, h_flex, InputState, Input, TextView, Popover, ScrollHandle } from 'gpui-base';
 import { exec, watchFolder, theme, home, appHome, props, nextCommand } from 'herdr';
 import { STATES, visible, cards, choices } from './feed.js';
@@ -13,11 +13,11 @@ const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'
 const ICONS='mods/trough/icons';
 const ROLE_ICON={report:'doc',document:'doc',source:'doc',log:'log',pr:'pr',issue:'pr',screenshot:'image'};
 // The summary is clamped to two lines of LINE pixels, so the cut always falls between lines.
-const LINE=17,LEDE_LINES=2;
+// line_height takes a length string: a bare number is a multiplier of the text size.
+const LINE=17,LINE_HEIGHT=`${LINE}px`,LEDE_LINES=2;
 const THUMB_W=64,THUMB_H=44,IMAGE_MAX_H=220;
 const isChoice=action=>action.handler==='answer_decision'||Boolean(action.choice);
-// A theme color with its alpha set to zero, for the fade at the bottom of a clamped summary.
-const clear=color=>/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color)?`${color.slice(0,7)}00`:'#00000000';
+const message=error=>String(error?.message??error).slice(0,300);
 
 export default class Trough extends View {
   init(_props,cx) {
@@ -400,7 +400,7 @@ export default class Trough extends View {
     const s=row.story,d=s.decision,action=this.choiceAction(row),blocked=action&&this.actionBlocked(row,action);
     const options=action?d.options:[];
     return v_flex().gap(5).p(8).rounded(6).bg(t.raised)
-      .child(this.detailText(d.prompt,12,t.accent,t,s.id).line_height(LINE))
+      .child(this.detailText(d.prompt,12,t.accent,t,s.id).line_height(LINE_HEIGHT))
       .when(Boolean(on&&action&&!blocked&&d.allow_comment),el=>el.child(h_flex().h(27).bg(t.surface).rounded(5).px(6).child(Input.new(this.commentInput).flex_1().min_w(0).text_size(12).text_color(t.foreground))))
       .when(Boolean(options.length),el=>el.child(h_flex().flex_wrap().gap(5).children(options.map((option,i)=>{
         const label=`${on&&i<9?`${i+1}  `:''}${option.label}`;
@@ -456,12 +456,13 @@ export default class Trough extends View {
       .child(hot?this.filing(row,t):div().id(`time-${id}`).flex_none().text_size(10).text_color(t.dim).tooltip(localTime(s.occurred_at)).child(relativeTime(s.occurred_at)));
     const title=h_flex().items_start().gap(6)
       .when(!st.read_at,el=>el.child(div().flex_none().mt(6).w(6).h(6).rounded_full().bg(t.accent)))
-      .child(div().flex_1().min_w(0).font_semibold().text_size(13).line_height(LINE).text_color(st.read_at?t.muted:t.foreground).child(s.title));
+      .child(div().flex_1().min_w(0).font_semibold().text_size(13).line_height(LINE_HEIGHT).text_color(st.read_at?t.muted:t.foreground).child(s.title));
     // The summary keeps its natural height inside a clipped box, and reports it, so the pane knows whether it was cut.
     const lede=v_flex().relative().overflow_hidden().when(!open,el=>el.max_h(clamp))
       .child(v_flex().id(`lede-${id}`).flex_none().on_size_change((size,cx)=>{ if(Math.abs((this.measured.get(id)??0)-size.height)>0.5) { this.measured.set(id,size.height); cx.notify(); } })
-        .child(this.detailText(s.summary,12,open?t.foreground:t.muted,t,id).line_height(LINE)))
-      .when(cut,el=>el.child(div().absolute().left(0).right(0).bottom(0).h(LINE).bg(Background.linear_gradient(180,Background.stop(clear(t.surface),0),Background.stop(t.surface,100)))));
+        .child(this.detailText(s.summary,12,open?t.foreground:t.muted,t,id).line_height(LINE_HEIGHT)))
+      // An element background takes one color, not a gradient: a cut summary ends in an ellipsis over its last line.
+      .when(cut,el=>el.child(div().absolute().right(0).bottom(0).h(LINE).pl(6).bg(t.surface).text_size(12).line_height(LINE_HEIGHT).text_color(t.muted).child('…')));
     const text=h_flex().items_start().gap(8)
       .child(v_flex().flex_1().min_w(0).gap(3).child(title).child(lede))
       .when(Boolean(row.media&&!open),el=>el.child(this.thumbnail(row,imageLink,t)));
@@ -502,9 +503,18 @@ export default class Trough extends View {
       .when(on&&Boolean(this.review)&&this.review?.story_id===id,el=>el.child(this.reviewSheet(t)))
       .when(on&&this.deleteConfirm===id,el=>el.child(this.deleteSheet(s,t)));
   }
-  render(cx) {
-    const t=theme(),list=this.cardList(),unread=this.rows.filter(r=>!r.state.read_at).length;
-    const latest=new Map(); for(const receipt of this.receipts) if(!latest.has(receipt.story_id)) latest.set(receipt.story_id,receipt);
+  // The kit throws while an element is built when a value has the wrong type. Building each card and the
+  // header on its own keeps one bad value to the piece it is in, instead of the whole pane.
+  guarded(build,fallback) { try { return build(); } catch(error) { return fallback(error); } }
+  brokenCard(entry,error,t) {
+    const story=entry?.row?.story,id=typeof story?.id==='string'?story.id:'',title=typeof story?.title==='string'&&story.title?story.title:id||'Story';
+    return v_flex().id(`story-${id}`).flex_none().mx(8).pl(12).pr(10).py(6).gap(2).rounded(8).bg(t.surface).border(1).border_color(this.sel===id?t.accent:t.blocked)
+      .on_click((_e,cx)=>{this.choose(id);this.handle.focus();cx.notify();})
+      .child(div().min_w(0).truncate().font_semibold().text_size(13).text_color(t.foreground).child(title))
+      .child(div().text_size(10).text_color(t.blocked).child(`This card could not be drawn: ${message(error)}`));
+  }
+  headerBar(t) {
+    const unread=this.rows.filter(r=>!r.state.read_at).length;
     const filterChoices=choices(this.rows,this.filterField).filter(Boolean);
     const filterPicker=this.filterPicker?v_flex().gap(5)
       .child(h_flex().gap(5).children([
@@ -515,7 +525,7 @@ export default class Trough extends View {
       .child(h_flex().gap(5).children(STATES.map((state,i)=>this.button(`state-${i}`,`${i+1} ${state}`,cx=>this.changeFilter('states',state,cx),t,this.filter.states.includes(state)))))
       .child(h_flex().gap(5).children(['source','kind','severity','subject'].map(field=>this.button(`field-${field}`,`${field}${this.filter[field].length?` (${this.filter[field].length})`:''}`,cx=>{this.filterField=field;cx.notify();},t,this.filterField===field))))
       .child(v_flex().h(120).overflow_y_scrollbar().gap(3).children(filterChoices.length?filterChoices.map(value=>this.button(`filter-${this.filterField}-${value}`,this.filterField==='severity'?severityLabel(value):value,cx=>this.changeFilter(this.filterField,value,cx),t,this.filter[this.filterField].includes(value))):[div().text_size(10).text_color(t.dim).child('No values yet')])):null;
-    const header=v_flex().px(10).py(8).gap(7).bg(t.chrome).border_b(1).border_color(t.border)
+    return v_flex().px(10).py(8).gap(7).bg(t.chrome).border_b(1).border_color(t.border)
       .child(h_flex().items_center().gap(6).child(div().flex_1().font_semibold().text_size(15).text_color(t.foreground).child('Trough'))
         .child(div().text_size(11).text_color(t.muted).child(`${unread} unread`))
         .when(this.rejected>0,el=>el.child(div().text_size(11).text_color(t.blocked).child(`${this.rejected} rejected`)))
@@ -545,13 +555,18 @@ export default class Trough extends View {
           .child(this.button('handler-on','Use it',cx=>this.handlerDecision('on',cx),t))
           .child(this.button('handler-off','Turn off',cx=>this.handlerDecision('off',cx),t)))))
       .when(this.search||this.input.value(),el=>el.child(h_flex().h(27).bg(t.background).rounded(5).px(6).child(Input.new(this.input).flex_1().min_w(0).text_size(12).text_color(t.foreground))));
+  }
+  render(cx) {
+    const t=theme(),list=this.cardList();
+    const latest=new Map(); for(const receipt of this.receipts) if(!latest.has(receipt.story_id)) latest.set(receipt.story_id,receipt);
+    const header=this.guarded(()=>this.headerBar(t),error=>div().px(10).py(8).bg(t.chrome).border_b(1).border_color(t.border).text_size(11).text_color(t.blocked).child(`The header could not be drawn: ${message(error)}`));
     return v_flex().id('trough-root').track_focus(this.handle).size_full().min_h(0).bg(t.background).text_size(12)
       .on_size_change((size,cx)=>{ if(this.width!==size.width) { this.width=size.width; cx.notify(); } })
       .on_key_down((e,cx)=>this.keys(e,cx)).on_mouse_down('left',()=>this.handle.focus())
       .child(header)
       .when(Boolean(this.error),el=>el.child(div().px(10).py(6).text_color(t.blocked).child(this.error)))
       .child(v_flex().id('feed').flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).bg(t.canvas).py(8).gap(6)
-        .children(list.length?list.map(entry=>this.card(entry,latest.get(entry.row.story.id),t)):[div().p(12).text_color(t.muted).child('No stories in this view')]))
+        .children(list.length?list.map(entry=>this.guarded(()=>this.card(entry,latest.get(entry.row.story.id),t),error=>this.brokenCard(entry,error,t))):[div().p(12).text_color(t.muted).child('No stories in this view')]))
       .child(div().px(10).py(5).text_size(10).text_color(t.dim).border_t(1).border_color(t.border).child('j/k move · Enter open · a action · . menu · o open link · r read · d done · z snooze · D delete · / search · f filters · x clear'));
   }
 }
