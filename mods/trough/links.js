@@ -68,3 +68,34 @@ export function actionLink(action, story) {
   const id = action.args?.link;
   return typeof id === 'string' && (story.links ?? []).some(link => link.id === id) ? id : null;
 }
+
+// Absolute paths a story body links to: written as text, as markdown link destinations, or as
+// file:// URLs. A click on one is allowed to open it, as a path in the summary is.
+const MARKDOWN_DESTINATION = /\]\(\s*<?([^)\s>]+)>?/g;
+function decoded(value) { try { return decodeURIComponent(value); } catch { return value; } }
+export function bodyPaths(text) {
+  const found = new Set(splitDetailLinks(text ?? '').filter(part => part.path).map(part => part.path));
+  for (const match of (text ?? '').matchAll(MARKDOWN_DESTINATION)) {
+    const target = linkTarget(match[1]);
+    if (!target?.path) continue;
+    found.add(target.path);
+    // The destination as written too, in case the click reports it undecoded.
+    if (match[1].startsWith('/')) found.add(match[1]);
+  }
+  return [...found];
+}
+
+// What a link clicked in a story body points at: {url} for http(s), {path} for an absolute path or
+// a file:// URL on this machine, null for anything else.
+export function linkTarget(value) {
+  if (typeof value !== 'string') return null;
+  if (isHttpUrl(value)) return {url: value};
+  if (/^file:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      return url.host && url.host !== 'localhost' ? null : {path: decoded(url.pathname)};
+    } catch { return null; }
+  }
+  if ((value.startsWith('/') && !value.startsWith('//')) || value.startsWith('~/')) return {path: decoded(value)};
+  return null;
+}

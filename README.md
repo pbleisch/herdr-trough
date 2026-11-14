@@ -1,6 +1,6 @@
 # Trough
 
-Trough is a local activity feed for [Herdr](https://herdr.dev) desktop. Tools and agents publish short JSON stories ("the build failed", "a report is ready", "this needs your decision"); you read them in a pane, file them as read or done, snooze them, and run their actions after reviewing exactly what each one will do.
+Trough is a local activity feed for [Herdr](https://herdr.dev) desktop. Tools and agents publish short JSON stories ("the build failed", "a report is ready", "this needs your decision"); you read them as cards in a pane, file them as read or done, snooze them, and run their actions after reviewing exactly what each one will do.
 
 ![Trough](preview.png)
 
@@ -51,7 +51,8 @@ Stories live in `~/.local/state/trough` by default. Set `TROUGH_DIR=/absolute/pa
 ```sh
 trough emit --source monitor --kind ci --title 'Build failed' \
   --summary 'Main branch verification failed.' --severity warning \
-  --link Log=https://ci.example.com/runs/42
+  --link Log=https://ci.example.com/runs/42 \
+  --body-file failures.md --image /tmp/ci/failure-graph.png
 ```
 
 `trough post --file story.json` accepts the full [v1 format](docs/story-v1.schema.json), and `trough validate --file story.json` checks a story without storing it. Required fields are `v`, `id`, `source`, `kind`, `title`, `summary`, `occurred_at` and `severity`. Unknown top-level fields are invalid. `source` and `provenance` are claims shown to the operator, not authority. `extensions` are inert. `group_key` groups cards within the same source and kind; each story keeps its own state.
@@ -63,6 +64,27 @@ Links carry the attach points for actions. Each link has an `id`, a `label` and 
 ```
 
 `role` is a short key. The conventional values are `report`, `document`, `artifact`, `log`, `screenshot`, `pr`, `issue` and `source`; other keys are allowed. `media_type` is a standard MIME type such as `text/markdown`, `application/pdf` or `image/png`. Both are optional. Stories stay small: link to a file, never embed it.
+
+### Body and image
+
+Two optional fields make a card richer. Older stories without them stay valid.
+
+- **`body`**: markdown, up to 16384 characters (CommonMark with GFM tables and task lists). A card shows the title and the `summary`, clamped to two lines. Opening the card shows the whole summary, then the body. So write the body to continue the summary, not to repeat it. The summary stays required plain text: the CLI, search and notifications use it as the short version. Raw HTML in a body is shown as text, and image syntax (`![alt](src)`) is shown as a link and never loaded. A web link opens in the browser, and an absolute path or `file://` link opens like a path in the summary. Other links are ignored.
+- **`image`**: the `id` of one of the story's path links whose `media_type` is `image/png`, `image/jpeg`, `image/gif` or `image/webp`. The card shows a thumbnail, and the whole picture when it is opened. The link's label describes the picture, and clicking the picture opens the file.
+
+```json
+"image": "chart",
+"links": [{"id": "chart", "label": "Error rate, last 30 minutes", "path": "/srv/monitor/eu-west-errors.png", "role": "screenshot", "media_type": "image/png"}]
+```
+
+Pictures are never fetched from the network. The pane can only draw files inside the Herdr home, so the first time a story is listed, the CLI copies its picture to `<Herdr home>/trough-media/`, named after the file's SHA-256. It copies only after these checks:
+
+- the path is a regular file, not a symbolic link, a folder or a device;
+- the file is at most 5 MiB;
+- its first bytes show it is PNG, JPEG, GIF or WebP (never SVG);
+- it is at most 4096 pixels on each side and 16 megapixels in total.
+
+The copy is made once. A producer that changes the file afterwards does not change the card. A picture that fails a check leaves the card without it, and the reason is shown when the card is opened. `trough emit --image PATH` runs the same checks, adds the path link with role `screenshot` and the detected media type, and sets `image`. `--body TEXT` or `--body-file FILE` (`-` for stdin) sets the body.
 
 Choose the lowest severity that fits:
 
@@ -79,23 +101,37 @@ A producer can write files directly. Generate a 32-hex random ID or a ULID, seri
 
 ## Read and file
 
-In the pane:
+The pane shows each story as a card that holds everything about it:
+
+- **Header line.** The severity, then where the story comes from, then how long ago it happened.
+- **Text.** The title, then the summary clamped to two lines, then a thumbnail if the story has a picture.
+- **Link chips.** Click a chip to open the link. Its ▾ lists what can be done with the link: Open, Show in Finder, Add to reading list, and actions the story declares for it.
+- **Bottom right.** The story's own action, if it declares one, next to a ⌄ caret that opens the card in place. An open card shows the whole summary, the markdown body, the full picture, every link's destination, the exact time and the story ID.
+- **On hover or selection.** Done, Snooze, Read and ⋯ replace the time. ⋯ lists every action and the filing commands.
+- **Decisions.** The options appear on the card. Picking one opens its review.
+- **Sheets.** The review sheet and the delete confirmation open inside the card.
+
+Stories with the same `group_key` (from the same source and kind) stack into one card showing the newest, with "N earlier" to show the rest.
 
 | Key | Does |
 | --- | --- |
-| `j` / `k`, arrows | Move |
+| `j` / `k`, arrows | Move between cards |
 | `g` / `G` | First / last |
-| Enter | Open or close the detail |
+| Enter | Open or close the card |
+| `a` | Review the story's first available action, declared or offered |
+| `.` | The card's ⋯ menu: `j`/`k` or arrows move, Enter runs, Escape closes |
+| `o` | Open the card's first link |
+| `1` to `9` | Answer a decision with that option, after a review |
 | `/` | Search |
 | `f` | Filter picker |
 | `x` | Clear search and filters, back to Inbox |
 | `r` | Read / unread |
 | `d` | Done / undo |
-| `D` | Delete, after a confirmation in the pane |
+| `D` | Delete, after a confirmation in the card |
 | `z` | Snooze for one hour |
-| `a` | Review the story's first available action, declared or offered |
+| Escape | Close the open sheet, menu or picker, or else close the card |
 
-The pane opens in **Inbox**: stories that are unread or still need action, including read stories with unfinished actions. The filter picker also offers **Active unfinished** (neither done nor snoozed) and the state toggles `1` to `4` for unread, needs action, done and snoozed. State toggles combine with AND. Values picked within one field (source, kind, severity, subject) combine with OR, and fields, state and search combine with AND. Unread means no read time, needs action means the story declares actions and is not done, and snoozed means its snooze time is in the future. The header shows the active view and filters. Times are relative in the list and exact in the detail. The pane reloads when the folder changes, including changes made by the CLI or another copy of the pane.
+The pane opens in **Inbox**: stories that are unread or still need action, including read stories with unfinished actions. The filter picker also offers **Active unfinished** (neither done nor snoozed) and the state toggles `1` to `4` for unread, needs action, done and snoozed. State toggles combine with AND. Values picked within one field (source, kind, severity, subject) combine with OR, and fields, state and search combine with AND. Unread means no read time, needs action means the story declares actions and is not done, and snoozed means its snooze time is in the future. The header shows the active view and filters. Times are relative on the card and exact in its tooltip and in the open card. The pane reloads when the folder changes, including changes made by the CLI or another copy of the pane.
 
 From the CLI:
 
@@ -241,7 +277,7 @@ Keep the checkout these packs are loaded from: the list stores their absolute pa
 
 ## Data folder
 
-`$TROUGH_DIR` holds `inbox/`, the immutable `store/`, per-story `state/`, `rejected/`, `reviews/`, `receipts/`, `answers/<source-id>/`, `tombstones/`, and the operator files `handlers.json`, `trough.json` and `allow.json` (your [standing approvals](#always-allow)). Treat `handlers.json` and any pack it lists as code: whoever can write them can run commands as you. Your own open handler and its `trust.json` live in the Herdr home instead, under `trough/`.
+`$TROUGH_DIR` holds `inbox/`, the immutable `store/`, per-story `state/`, `rejected/`, `reviews/`, `receipts/`, `answers/<source-id>/`, `tombstones/`, `media/` (which picture each story showed), and the operator files `handlers.json`, `trough.json` and `allow.json` (your [standing approvals](#always-allow)). Treat `handlers.json` and any pack it lists as code: whoever can write them can run commands as you. Your own open handler and its `trust.json` live in the Herdr home instead, under `trough/`. Copies of story pictures are kept in the Herdr home under `trough-media/`, one folder per data folder. Pruning and `trough delete` remove the copies no remaining story uses. The CLI finds the Herdr home from `--app-home DIR`, else `HERDR_APP_HOME`, else `~/.config/herdr-app`. The pane passes `--app-home` itself.
 
 ## Develop
 

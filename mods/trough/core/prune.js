@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ID } from './schema.js';
 import { ingest, layout, readState, replaceAtomic, stored, withStateLock } from './store.js';
+import { cleanMedia, removeMediaRecord } from './media.js';
 
 const DAY=86400000;
 const TOMBSTONE_DAYS=365;
@@ -68,6 +69,7 @@ async function removeStory(root,id,indexes,now) {
   for(const file of [path.join(root,'inbox',`${id}.json`),path.join(root,'store',`${id}.json`),path.join(root,'state',`${id}.json`),
     ...(indexes.reviews.get(id)??[]).map(x=>x.file),...(indexes.receipts.get(id)??[]).map(x=>x.file)])
     await fs.unlink(file).catch(error=>{if(error.code!=='ENOENT') throw error;});
+  await removeMediaRecord(root,id);
 }
 
 export async function deleteStory(root,id) {
@@ -81,6 +83,7 @@ export async function deleteStory(root,id) {
     if(indexes.answers.has(id)) throw new Error('cannot delete story: an answer has not been delivered');
     if(indexes.deliveries.has(id)) throw new Error('cannot delete story: a delivery is pending');
     await removeStory(root,id,indexes,Date.now());
+    await cleanMedia(root);
     return {id,deleted:true};
   });
 }
@@ -126,6 +129,7 @@ export async function prune(root,{olderThan,dryRun=false,now=Date.now()}={}) {
       await removeStory(root,item.id,indexes,now);
     }
     await expireTombstones(root,now);
+    await cleanMedia(root);
     return {dry_run:false,older_than:ageText,ids:selected.map(x=>x.id),count:selected.length};
   });
 }

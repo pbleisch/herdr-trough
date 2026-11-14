@@ -1,6 +1,9 @@
 export const ID = /^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9a-f]{32})$/;
 export const KEY = /^[a-z][a-z0-9_-]{0,63}$/;
 const MEDIA = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/;
+// The picture formats a card can show. The file's own bytes are checked again before it is shown (media.js).
+export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+export const BODY_MAX = 16384;
 const NS = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/;
 const own = (o, k) => Object.hasOwn(o, k);
 const fail = (path, reason) => { throw new Error(`${path}: ${reason}`); };
@@ -77,13 +80,14 @@ export function parseJson(bytes) {
   return JSON.parse(text);
 }
 export function validateStory(s, filename) {
-  object(s, 'story', ['v','id','source','kind','title','summary','occurred_at','severity'], ['v','id','source','kind','title','summary','occurred_at','severity','outcome','subject','group_key','expires_at','supersedes','links','provenance','actions','decision','extensions']);
+  object(s, 'story', ['v','id','source','kind','title','summary','occurred_at','severity'], ['v','id','source','kind','title','summary','occurred_at','severity','outcome','subject','group_key','expires_at','supersedes','links','provenance','actions','decision','extensions','body','image']);
   if (s.v !== 1) fail('v', 'unsupported version'); id(s.id,'id');
   if (filename && filename !== `${s.id}.json`) fail('id', 'does not match filename');
   object(s.source,'source',['id','label'],['id','label','instance','machine','terminal','session']);
   key(s.source.id,'source.id'); string(s.source.label,'source.label',1,128);
   for (const k of ['instance','machine','terminal','session']) if (own(s.source,k)) string(s.source[k],`source.${k}`,0,128);
   key(s.kind,'kind'); string(s.title,'title',1,200); string(s.summary,'summary',1,4096); timestamp(s.occurred_at,'occurred_at');
+  if (own(s,'body')) string(s.body,'body',1,BODY_MAX);
   if (!['info','notice','warning','critical'].includes(s.severity)) fail('severity','invalid severity');
   if (own(s,'outcome') && !['succeeded','failed','pending'].includes(s.outcome)) fail('outcome','invalid outcome');
   if (own(s,'subject')) { object(s.subject,'subject',['type','key'],['type','key','label']); key(s.subject.type,'subject.type'); string(s.subject.key,'subject.key',1,256); if (own(s.subject,'label')) string(s.subject.label,'subject.label',0,200); }
@@ -93,6 +97,13 @@ export function validateStory(s, filename) {
   if (own(s,'provenance')) { object(s.provenance,'provenance',[],['event_id','task_id','repository_url','head','reference']); for (const [k,v] of Object.entries(s.provenance)) string(v,`provenance.${k}`,0,k === 'task_id'||k === 'head' ? 128 : k === 'event_id' ? 256 : 2048); }
   const links = s.links ?? []; if (!Array.isArray(links) || links.length > 16) fail('links','expected at most 16 links');
   for (const [i,l] of links.entries()) { object(l,`links[${i}]`,['id','label'],['id','label','url','path','role','media_type']); if (own(l,'role')) key(l.role,`links[${i}].role`); if (own(l,'media_type') && (typeof l.media_type!=='string' || !MEDIA.test(l.media_type))) fail(`links[${i}].media_type`,'expected a media type such as text/markdown'); key(l.id,`links[${i}].id`); string(l.label,`links[${i}].label`,1,120); if (own(l,'url') === own(l,'path')) fail(`links[${i}]`,'expected exactly one destination'); if (own(l,'url')) url(l.url,`links[${i}].url`); else localPath(l.path,`links[${i}].path`); } unique(links,'links');
+  if (own(s,'image')) {
+    key(s.image,'image');
+    const link=links.find(l=>l.id===s.image);
+    if (!link) fail('image','must name one of the story\'s links');
+    if (!own(link,'path')) fail('image','must name a path link; images are never fetched from a URL');
+    if (!IMAGE_TYPES.includes(link.media_type)) fail('image',`the link's media_type must be one of ${IMAGE_TYPES.join(', ')}`);
+  }
   const actions = s.actions ?? []; if (!Array.isArray(actions) || actions.length > 8) fail('actions','expected at most 8 actions');
   for (const [i,a] of actions.entries()) {
     object(a,`actions[${i}]`,['id','label','handler'],['id','label','handler','args','choice']); key(a.id,`actions[${i}].id`); string(a.label,`actions[${i}].label`,1,120); key(a.handler,`actions[${i}].handler`);

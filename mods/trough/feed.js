@@ -19,15 +19,17 @@ export function visible(rows,filters,now=Date.now()) {
       const selected=filters[field];
       if (selected && (Array.isArray(selected)?selected.length&&!selected.includes(value):value!==selected)) return false;
     }
-    if (q && ![s.title,s.summary,s.source.label,s.kind,s.subject?.label,s.subject?.key,s.severity].some(x=>x?.toLowerCase().includes(q))) return false;
+    if (q && ![s.title,s.summary,s.body,s.source.label,s.kind,s.subject?.label,s.subject?.key,s.severity].some(x=>x?.toLowerCase().includes(q))) return false;
     return true;
   });
 }
+// Stories share a group when they come from the same source and kind and name the same group_key.
+export const groupKey=s=>s.group_key ? JSON.stringify([s.source.id,s.kind,s.group_key]) : s.id;
 export function groups(rows) {
   const map=new Map();
   for (const row of rows) {
     const s=row.story;
-    const key=s.group_key ? JSON.stringify([s.source.id,s.kind,s.group_key]) : s.id;
+    const key=groupKey(s);
     if (!map.has(key)) map.set(key,{key,items:[],source:s.source.label,kind:s.kind});
     map.get(key).items.push(row);
   }
@@ -35,3 +37,15 @@ export function groups(rows) {
   return [...map.values()].map(g=>({...g,severity:g.items.reduce((best,r)=>order[r.story.severity]>order[best]?r.story.severity:best,'info'),outstanding:g.items.filter(r=>r.story.actions?.length&&!r.state.done_at).length}));
 }
 export const choices=(rows,field)=>[null,...new Set(rows.map(r=>field==='source'?r.story.source.id:field==='subject'?r.story.subject?.key:r.story[field]).filter(Boolean))].sort((a,b)=>a===null?-1:b===null?1:a.localeCompare(b));
+const outstanding=row=>Boolean(row.story.actions?.length&&!row.state.done_at);
+// The cards to draw, in order. A group of two or more stories is one card showing its newest story,
+// with "N earlier"; the earlier stories follow it as their own cards only while the group is open.
+export function cards(rows,open=new Set()) {
+  const list=[];
+  for (const group of groups(rows)) {
+    const [head,...earlier]=group.items;
+    list.push({row:head,key:group.key,earlier:earlier.length,outstanding:earlier.filter(outstanding).length,nested:false});
+    if (earlier.length && open.has(group.key)) for (const row of earlier) list.push({row,key:group.key,earlier:0,outstanding:0,nested:true});
+  }
+  return list;
+}

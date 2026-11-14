@@ -8,9 +8,11 @@ import { listPacks, addPack, removePack } from '../core/packages.js';
 import { userHandler, turnOn, turnOff } from '../core/open-handlers.js';
 import { listProducers, runProducer } from '../core/producers.js';
 import { prune, deleteStory } from '../core/prune.js';
+import { checkedImage, withMedia } from '../core/media.js';
+import path from 'node:path';
 import { visible } from '../feed.js';
 
-const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN [--always-allow] | act STORY ACTION [--option ID] [--comment TEXT] | allow [list] [--json] | allow revoke PACK/HANDLER|all | open STORY PATH | receipts [STORY] | producers | produce ID | packages [list|check] [--json] | packages add PATH|core [--options-file FILE] | packages remove NAME|PATH | actions [--json] | handler [status|on|off]\nGlobal: --dir DIR (or TROUGH_DIR). --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
+const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--body MARKDOWN | --body-file FILE] [--image PATH] [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN [--always-allow] | act STORY ACTION [--option ID] [--comment TEXT] | allow [list] [--json] | allow revoke PACK/HANDLER|all | open STORY PATH | receipts [STORY] | producers | produce ID | packages [list|check] [--json] | packages add PATH|core [--options-file FILE] | packages remove NAME|PATH | actions [--json] | handler [status|on|off]\nGlobal: --dir DIR (or TROUGH_DIR). --app-home DIR names the Herdr home (or HERDR_APP_HOME), where card images are cached and your own open handler lives. --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
 function parse(argv) {
   const positional=[],opts={};
   for (let i=0;i<argv.length;i++) {
@@ -18,7 +20,7 @@ function parse(argv) {
     if (!x.startsWith('--')) { positional.push(x); continue; }
     const k=x.slice(2);
     if (['json','inbox','unread','needs-action','done','snoozed','all','dry-run','always-allow'].includes(k)) { opts[k]=true; continue; }
-    if (!['options-file','dir','file','source','kind','title','summary','severity','subject','search','group-key','link','until','option','comment','older-than'].includes(k) || i+1>=argv.length) throw new Error(`unknown or incomplete option: ${x}`);
+    if (!['options-file','dir','app-home','file','source','kind','title','summary','body','body-file','image','severity','subject','search','group-key','link','until','option','comment','older-than'].includes(k) || i+1>=argv.length) throw new Error(`unknown or incomplete option: ${x}`);
     if (k==='link') (opts.link??=[]).push(argv[++i]);
     else if (['source','kind','severity','subject'].includes(k) && positional[0]==='ls') (opts[k]??=[]).push(argv[++i]);
     else { if (opts[k]!==undefined) throw new Error(`duplicate option: ${x}`); opts[k]=argv[++i]; }
@@ -34,6 +36,7 @@ function lsFilters(opts) {
 }
 async function main() {
   const {positional,opts}=parse(process.argv.slice(2)); const [command,id,...rest]=positional; const root=rootDir(opts.dir);
+  if (opts['app-home']!==undefined) { if (!path.isAbsolute(opts['app-home'])) throw new Error('--app-home must be an absolute path'); process.env.HERDR_APP_HOME=opts['app-home']; }
   if (!command || command==='help') { output(usage); return; }
   if (command==='validate') { const bytes=await bytesFrom(opts.file); validateStory(parseJson(bytes)); output('valid'); return; }
   if (command==='post') { output(await post(root,await bytesFrom(opts.file))); return; }
@@ -41,6 +44,15 @@ async function main() {
     const links=(opts.link??[]).map((spec,i)=>{ const cut=spec.indexOf('='); if (cut<1) throw new Error('link must be LABEL=URL or LABEL=/absolute/path'); const dest=spec.slice(cut+1); return {id:`link${i+1}`,label:spec.slice(0,cut),...(dest.startsWith('/')?{path:dest}:{url:dest})}; });
     const story={v:1,id:crypto.randomBytes(16).toString('hex'),source:{id:opts.source,label:opts.source},kind:opts.kind,title:opts.title,summary:opts.summary,occurred_at:new Date().toISOString(),severity:opts.severity??'info'};
     if (opts['group-key']) story.group_key=opts['group-key'];
+    if (opts.body!==undefined && opts['body-file']!==undefined) throw new Error('use --body or --body-file, not both');
+    if (opts.body!==undefined) story.body=opts.body;
+    if (opts['body-file']!==undefined) story.body=(await bytesFrom(opts['body-file'])).toString('utf8').replace(/\n$/,'');
+    if (opts.image!==undefined) {
+      // The picture is checked now, so a wrong file fails here rather than on the card.
+      const file=path.resolve(opts.image),{type}=await checkedImage(file);
+      links.push({id:'image',label:path.basename(file).slice(0,120)||'Image',path:file,role:'screenshot',media_type:type});
+      story.image='image';
+    }
     if (links.length) story.links=links;
     output(await post(root,Buffer.from(JSON.stringify(validateStory(story))+'\n'))); return;
   }
@@ -103,8 +115,8 @@ async function main() {
     }
     return;
   }
-  if (command==='ls') { let rows=visible(await list(root),lsFilters(opts)); if (opts.json) output(await annotate(root,rows)); else for (const r of rows) output(`${r.story.id}\t${r.story.severity}\t${r.story.source.label}\t${r.story.title}`); return; }
-  if (command==='show') { if (!id) throw new Error('story ID required'); await ingest(root); const row=await stored(root,id); output({story:row.story,story_hash:row.hash,received_at:row.received_at}); return; }
+  if (command==='ls') { let rows=visible(await list(root),lsFilters(opts)); if (opts.json) output(await withMedia(root,await annotate(root,rows))); else for (const r of rows) output(`${r.story.id}\t${r.story.severity}\t${r.story.source.label}\t${r.story.title}`); return; }
+  if (command==='show') { if (!id) throw new Error('story ID required'); await ingest(root); const row=await stored(root,id); const [{media,media_error}]=await withMedia(root,[{story:row.story}]); output({story:row.story,story_hash:row.hash,received_at:row.received_at,...(media?{media}:{}),...(media_error?{media_error}:{})}); return; }
   if (['read','unread','done','undo','snooze'].includes(command)) { if (!id) throw new Error('story ID required'); output(await setState(root,id,command,opts.until)); return; }
   throw new Error(`unknown command: ${command}\n${usage}`);
 }

@@ -7,7 +7,7 @@ import { KEY } from './schema.js';
 import { layout, stored, publishExclusive, replaceAtomic, withStateLock } from './store.js';
 import { localOpenPlan } from './core-pack.js';
 import { spawnSync } from 'node:child_process';
-import { splitDetailLinks } from '../links.js';
+import { splitDetailLinks, bodyPaths } from '../links.js';
 import { readAllowed, writeAllowed, allowKey, isAllowKey } from './allow.js';
 
 const text=v=>JSON.stringify(v,null,2)+'\n';
@@ -263,7 +263,7 @@ export async function revokeAllowed(root,key) {
 async function planFor(root,storyId,actionId,choice={}) {
   const {story,hash:story_hash}=await stored(root,storyId);
   const inlinePath=actionId==='__open_local_path';
-  if(inlinePath && (typeof choice.path!=='string'||![...(story.links??[]).map(l=>l.path),...splitDetailLinks(story.summary).map(p=>p.path),...splitDetailLinks(story.decision?.prompt??'').map(p=>p.path)].includes(choice.path))) fail('path is not present in this story');
+  if(inlinePath && (typeof choice.path!=='string'||![...(story.links??[]).map(l=>l.path),...splitDetailLinks(story.summary).map(p=>p.path),...splitDetailLinks(story.decision?.prompt??'').map(p=>p.path),...bodyPaths(story.body??'')].includes(choice.path))) fail('path is not present in this story');
   const catalog=await handlerCatalog(root);
   const base={story_id:storyId,action_id:actionId,source:story.source,story_hash};
   const packPlan=async(h,action)=>{
