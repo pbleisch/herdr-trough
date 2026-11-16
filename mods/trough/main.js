@@ -15,6 +15,8 @@ const ROLE_ICON={report:'doc',document:'doc',source:'doc',log:'log',pr:'pr',issu
 // The summary is clamped to two lines of LINE pixels, so the cut always falls between lines.
 // line_height takes a length string: a bare number is a multiplier of the text size.
 const LINE=17,LINE_HEIGHT=`${LINE}px`,LEDE_LINES=2;
+// The footer's key hints. Each stays whole, so a narrow pane wraps between hints, not inside one.
+const KEY_HINTS=['j/k move','Enter open','a action','. menu','o open link','r read','d done','z snooze','D delete','/ search','f filters','x clear'];
 const THUMB_W=64,THUMB_H=44,IMAGE_MAX_H=220;
 const isChoice=action=>action.handler==='answer_decision'||Boolean(action.choice);
 const message=error=>String(error?.message??error).slice(0,300);
@@ -406,7 +408,7 @@ export default class Trough extends View {
         const label=`${on&&i<9?`${i+1}  `:''}${option.label}`;
         return blocked?div().id(`option-${s.id}-${option.id}`).px(7).py(3).rounded(5).border(1).border_color(t.border).text_size(11.5).text_color(t.dim).child(label)
           :div().id(`option-${s.id}-${option.id}`).px(7).py(3).rounded(5).bg(t.surface).border(1).border_color(t.border).text_size(11.5).text_color(t.foreground).cursor_pointer()
-            .hover(x=>x.bg(t.hover)).tooltip(option.answer_text).on_click((_e,cx)=>{cx.stop_propagation();this.answer(row,i,cx);});
+            .hover(x=>x.bg(t.hover)).tooltip(option.answer_text).on_click((_e,cx)=>{cx.stop_propagation();this.answer(row,i,cx);}).child(label);
       }))))
       .when(Boolean(blocked),el=>el.child(div().text_size(10).text_color(t.dim).child(`${action.label} is unavailable: ${blocked}`)))
       .when(Boolean(on&&this.pick&&options.length&&!blocked),el=>el.child(div().text_size(10).text_color(t.dim).child(`Press 1-${Math.min(9,options.length)} or click an answer to review it.`)));
@@ -567,6 +569,7 @@ export default class Trough extends View {
       .when(Boolean(this.error),el=>el.child(div().px(10).py(6).text_color(t.blocked).child(this.error)))
       .child(v_flex().id('feed').flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).bg(t.canvas).py(8).gap(6)
         .children(list.length?list.map(entry=>this.guarded(()=>this.card(entry,latest.get(entry.row.story.id),t),error=>this.brokenCard(entry,error,t))):[div().p(12).text_color(t.muted).child('No stories in this view')]))
-      .child(div().px(10).py(5).text_size(10).text_color(t.dim).border_t(1).border_color(t.border).child('j/k move · Enter open · a action · . menu · o open link · r read · d done · z snooze · D delete · / search · f filters · x clear'));
+      .child(h_flex().id('key-hints').flex_wrap().gap_x(10).px(10).py(5).text_size(10).text_color(t.dim).border_t(1).border_color(t.border)
+        .children(KEY_HINTS.map(hint=>div().whitespace_nowrap().child(hint))));
   }
 }

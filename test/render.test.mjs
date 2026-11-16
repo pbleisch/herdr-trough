@@ -97,6 +97,16 @@ test('a summary that fits is neither clamped short nor marked as cut',()=>{
   assert.ok(!box._children.some(c=>text(c)==='…'));
 });
 
+test('a decision that can be answered labels each option button, numbered while selected',()=>{
+  const view=pane(),label=(tree,id)=>text(node(tree,`option-ask-${id}`));
+  let tree=view.render(cx);
+  assert.equal(label(tree,'yes'),'Yes');
+  assert.equal(label(tree,'no'),'No');
+  view.choose('ask'); tree=view.render(cx);
+  assert.equal(label(tree,'yes'),'1  Yes');
+  assert.equal(label(tree,'no'),'2  No');
+});
+
 test('a card that cannot be drawn shows its error in its place, and the rest of the feed still draws',()=>{
   const view=pane([row(story('bad',{title:'Bad one',links:[{id:'odd',label:{nested:true},url:'https://example.com/a'}]})),row(story('good',{title:'Good one'}))]);
   const tree=view.render(cx);

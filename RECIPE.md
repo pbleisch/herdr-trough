@@ -35,7 +35,7 @@ A single column, top to bottom. All colors are theme colors.
    - Menus (the card's ⋯ and a chip's ▾): a popover on the popover color with a border and 7px corners, one row per item, the keyboard row highlighted. The card menu lists the declared actions not shown as the primary, every link's actions as `Action: link label`, offers that belong to no link, then `Mark read`/`Mark unread` (r), `Done`/`Undo done` (d), `Snooze 1 hour` (z) and `Delete…` (D). An unavailable item is dim with `Unavailable: reason` under it.
    - The title, summary, prompt and link lines wrap at the card's width, at any width; a long path or URL breaks mid-word. Chips wrap too.
    - An empty view shows `No stories in this view`.
-4. Footer, with a top border: one 10px dim line of key hints.
+4. Footer, with a top border: the key hints in 10px dim text, 10px apart (`j/k move`, `Enter open`, ... `x clear`), wrapping between hints and never inside one.
 
 As an overlay the pane is 640 by 560; docked in a layout it defaults to 420 wide.
 
