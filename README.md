@@ -31,8 +31,17 @@ Paths written in a story's summary or prompt are clickable only in POSIX form (`
 
 ## Install
 
-1. Copy `mods/trough` to `~/.config/herdr-app/mods/trough`. Keep its `bin/` and `core/` folders together.
-2. Put the CLI on your `PATH`: `ln -s ~/.config/herdr-app/mods/trough/bin/trough ~/.local/bin/trough`.
+You need [Node.js](https://nodejs.org) 22 or later on your `PATH`, and Herdr desktop for the pane.
+
+1. Get the files and copy the mod into your Herdr home. Keep its `bin/` and `core/` folders together.
+
+   ```sh
+   git clone https://github.com/pbleisch/herdr-trough.git
+   mkdir -p ~/.config/herdr-app/mods
+   cp -R herdr-trough/mods/trough ~/.config/herdr-app/mods/trough
+   ```
+
+2. Put the CLI on your `PATH`: `mkdir -p ~/.local/bin && ln -s ~/.config/herdr-app/mods/trough/bin/trough ~/.local/bin/trough` (or any other directory on your `PATH`).
 3. Run `herdr-app check ~/.config/herdr-app/mods/trough`.
 4. Show the pane. Either add `{"mod":"trough"}` as a block in a layout, or bind a key that opens it as an overlay. [`keys.json`](keys.json) suggests `cmd-shift-u`:
 

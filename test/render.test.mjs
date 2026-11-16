@@ -10,14 +10,14 @@ import { cx, walk, call, text } from './fake-kit.mjs';
 
 const { default: Trough } = await import('../mods/trough/main.js');
 
-const firstmate={id:'firstmate_0001',label:'Firstmate',instance:'firstmate'};
-const story=(id,extra={})=>({v:1,id,source:firstmate,occurred_at:'2026-11-14T11:20:00.000Z',severity:'info',kind:'agent',title:`Story ${id}`,summary:'Ready.',...extra});
+const builder={id:'builder_0001',label:'Builder',instance:'builder'};
+const story=(id,extra={})=>({v:1,id,source:builder,occurred_at:'2026-11-14T11:20:00.000Z',severity:'info',kind:'agent',title:`Story ${id}`,summary:'Ready.',...extra});
 const row=(s,extra={})=>({story:s,story_hash:`hash-${s.id}`,received_at:s.occurred_at,state:{},offers:[],badges:[],...extra});
-const LONG='The card-feed build is ready on branch fm/trough-card-feed-scout, a local-only branch that fast-forwards onto main. '
+const LONG='The card-feed build is ready on branch feature/card-feed, a local-only branch that fast-forwards onto main. '
   +'It passed its 87 tests and the mod check; the pane was not opened in a live window, so the screenshot is still to come. '
   +'See https://example.com/pulls/137 and /tmp/trough-report.md for the details, then merge when the checks are green.';
 
-// The shapes in a real store: Firstmate notes with long summaries in groups, merge outcomes with a
+// The shapes in a real store: agent notes with long summaries in groups, merge outcomes with a
 // link the core pack offers to open, decisions with and without options, and a report with a body,
 // a picture, a declared action and a receipt.
 const rows=[
@@ -26,7 +26,7 @@ const rows=[
   row(story('merge',{kind:'merge',severity:'warning',outcome:'failed',summary:'PR checks failed on main.',group_key:'merge:agent-dev',subject:{type:'task',key:'agent-dev'},
     links:[{id:'change',label:'Pull request',url:'https://example.com/pulls/59',role:'pr'}]}),
     {offers:[{id:'core.open.change',pack:'core',label:'Open',handler:'open_url',args:{link:'change'},link:'change',available:true}],badges:[{label:'core'}]}),
-  row(story('hold',{kind:'decision',severity:'notice',summary:LONG,decision:{question_id:'hold_1',prompt:`Captain's call. ${LONG}`,options:[]}})),
+  row(story('hold',{kind:'decision',severity:'notice',summary:LONG,decision:{question_id:'hold_1',prompt:`Your call. ${LONG}`,options:[]}})),
   row(story('ask',{kind:'decision',severity:'critical',summary:'Pick one.',decision:{question_id:'ask_1',prompt:'Ship it?',allow_comment:true,options:[{id:'yes',label:'Yes',answer_text:'Ship it.'},{id:'no',label:'No',answer_text:'Hold it.'}]},
     actions:[{id:'answer',label:'Answer',handler:'answer_decision'}]}),{action_status:{answer:{available:true}}}),
   row(story('report',{kind:'report',summary:LONG,body:'## Result\n\n- one\n- `two` <b>x</b>\n',image:'shot',
