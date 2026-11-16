@@ -1,13 +1,15 @@
 # Changelog
 
-## 0.2.0 - 2026-11-13
+## 0.2.0 - 2026-11-15
 
+- Card feed: the pane is one column of cards, each holding everything about its story, in place of the list and detail view. A card shows the severity, source and time, the title, the summary clamped to two lines and a thumbnail; its caret opens it in place to the whole summary, the body, the full picture and every link. Done, Snooze, Read and a ⋯ menu replace the time on hover or selection. Links are chips whose ▾ lists what can be done with them, decision options sit on the card, and the review and delete sheets open inside it. Stories in one group stack into a single card with "N earlier". Title, summary, prompt and link lines wrap at the card's width.
+- Stories gain an optional markdown `body` (up to 16384 characters; raw HTML is shown as text and images are never loaded) and an optional `image`, naming one of the story's path links to a PNG, JPEG, GIF or WebP picture. The CLI copies a picture into the Herdr home only after checking its type, size and dimensions, and never fetches one from the network. `trough emit` gains `--body`, `--body-file` and `--image`.
+- Each card, and the header, is built on its own, so a value the kit refuses shows that card's error in its place instead of taking down the pane.
 - Story augmentation: a pack's `augment(story, context)` attaches actions and badges to stories when they are processed, without changing the stored story. Offers are recomputed and pinned at review and refused at run if they are gone, each pack fails alone, and the review sheet names the pack that offered an action.
 - Links accept an optional `role` (such as `report`, `document`, `log`, `pr`) and `media_type` (a MIME type), so packs can choose fitting actions.
 - Core pack, on by default: `open_url`, `open_path` and `open_file`, offered on every link by type. `trough packages remove core` turns it off.
 - Open and reveal on macOS, Linux and Windows through per-platform handler scripts called with separate arguments, and an optional handler of your own in front of them: off until `trough handler on`, checked for ownership and permissions, and stopped until approved again after it changes.
 - Always allow: a review sheet for a local, low-risk action that a pack offers has an **Always allow** checkbox. Confirming with it ticked records a standing approval for that pack's handler in `allow.json`, and later clicks run at once and still write a receipt. The approval is tied to what the handler runs and asks again once when that changes. The pane's **Always allowed** panel and `trough allow` list and revoke approvals; `trough act` and `trough run --always-allow` are the CLI side. Decision answers, prompt deliveries and actions a story declares can never be always allowed.
-- Detail pane: the title, summary, prompt and links wrap at the pane's width instead of running past its edge, and an action that targets a link sits in that link's button row.
 - Reading-list pack: offers **Add to reading list** on report and document links instead of waiting for a story to declare it.
 - `trough actions` also lists each pack's augment rules.
 - The Linux and Windows handlers were run on real systems; the README's Status section records what was covered. Fixes from that:
@@ -18,6 +20,7 @@
 
 ### Upgrading from 0.1.0
 
+- The pane's list and detail view are replaced by the card feed. Enter opens and closes a card, `.` opens its ⋯ menu and `o` opens its first link.
 - The Firstmate pack no longer declares the reading-list action on report cards; the reading-list pack offers it on any link with role `report`. Report cards stored earlier have no role on their link and keep their declared action.
 - Open and reveal moved into the core pack. Stories that declare `open_url`, `open_path` or `open_file` keep working.
 - `trough ls --json` rows gain `offers` and `badges`; `trough actions --json` is now `{handlers, augmenters}`.
