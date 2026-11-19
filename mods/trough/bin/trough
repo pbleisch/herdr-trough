@@ -12,7 +12,7 @@ import { checkedImage, withMedia } from '../core/media.js';
 import path from 'node:path';
 import { visible } from '../feed.js';
 
-const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--body MARKDOWN | --body-file FILE] [--image PATH] [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN [--always-allow] | act STORY ACTION [--option ID] [--comment TEXT] | allow [list] [--json] | allow revoke PACK/HANDLER|all | open STORY PATH | receipts [STORY] | producers | produce ID | packages [list|check] [--json] | packages add PATH|core [--options-file FILE] | packages remove NAME|PATH | actions [--json] | handler [status|on|off]\nGlobal: --dir DIR (or TROUGH_DIR). --app-home DIR names the Herdr home (or HERDR_APP_HOME), where card images are cached and your own open handler lives. --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
+const usage=`trough post --file FILE | emit --source ID --kind KIND --title TEXT --summary TEXT [--body MARKDOWN | --body-file FILE] [--image PATH] [--severity LEVEL] [--group-key KEY] [--link LABEL=URL] | validate --file FILE | ingest | prune [--older-than 3d] [--dry-run] | delete ID | ls [--json] [--inbox] [--all] [--unread] [--needs-action] [--done] [--snoozed] [--source ID] [--kind KIND] [--severity LEVEL] [--subject KEY] [--search TEXT] | show ID | read|unread|done|undo ID | snooze ID --until RFC3339 | feed | rejections | review STORY ACTION [--option ID] [--comment TEXT] | run REVIEW_TOKEN [--always-allow] | act STORY ACTION [--option ID] [--comment TEXT] | allow [list] [--json] | allow revoke PACK/HANDLER|all | open STORY PATH | receipts [STORY] | producers | produce ID | packages [list|check] [--json] | packages add PATH|core [--options-file FILE] | packages remove NAME|PATH | actions [--json] | handler [status|on|off]\nGlobal: --dir DIR (or TROUGH_DIR). --app-home DIR names the Herdr home (or HERDR_APP_HOME), where card images are cached and your own open handler lives. --inbox selects unread OR needs action and combines with fields and search using AND; it cannot be combined with --all or state flags. Explicit state flags AND together; repeated values for one field OR together; dimensions AND together. Without a state option, ls shows active unfinished stories; --all includes every state.`;
 function parse(argv) {
   const positional=[],opts={};
   for (let i=0;i<argv.length;i++) {
@@ -114,6 +114,12 @@ async function main() {
       for (const a of augmenters) for (const rule of a.rules.length?a.rules:['augments stories (no rules described)']) output(`augment\tpack ${a.pack}\t${rule}`);
     }
     return;
+  }
+  // Everything the pane shows, read in one process: spawning node once per list is most of a reload's time.
+  if (command==='feed') {
+    if(id) throw new Error('feed takes no ID');
+    const all=await list(root);
+    output({rows:await withMedia(root,await annotate(root,all)),receipts:await receipts(root),rejected:(await rejections(root)).length,packs:await listPacks(root,all.map(row=>row.story)),allowed:await listAllowed(root)}); return;
   }
   if (command==='ls') { let rows=visible(await list(root),lsFilters(opts)); if (opts.json) output(await withMedia(root,await annotate(root,rows))); else for (const r of rows) output(`${r.story.id}\t${r.story.severity}\t${r.story.source.label}\t${r.story.title}`); return; }
   if (command==='show') { if (!id) throw new Error('story ID required'); await ingest(root); const row=await stored(root,id); const [{media,media_error}]=await withMedia(root,[{story:row.story}]); output({story:row.story,story_hash:row.hash,received_at:row.received_at,...(media?{media}:{}),...(media_error?{media_error}:{})}); return; }

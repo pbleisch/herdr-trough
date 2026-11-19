@@ -8,12 +8,13 @@ import { userHandler } from './open-handlers.js';
 
 const plain=value=>value&&typeof value==='object'&&!Array.isArray(value);
 
-export async function listPacks(root) {
+// stories: the stored stories when the caller has read them already, so the store is read once.
+export async function listPacks(root,stories) {
   const catalog=await handlerCatalog(root);
   let producers=[],producerError=null;
   try { producers=await listProducers(root); } catch(error) { producerError=String(error?.message??error).slice(0,500); }
   const own=await userHandler();
-  const seen=new Map(),augmentFailures=augmentProblems(catalog,(await list(root)).map(row=>row.story));
+  const seen=new Map(),augmentFailures=augmentProblems(catalog,stories??(await list(root)).map(row=>row.story));
   return catalog.packs.map(pack=>{
     const problems=[],producer=typeof pack.path==='string'?producers.find(item=>item.id===producerId(pack.path)):null;
     if(pack.error) problems.push(pack.error);

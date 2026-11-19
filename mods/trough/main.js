@@ -7,6 +7,7 @@ import { localTime, relativeTime } from './time.js';
 import { severityLabel } from './severity-label.js';
 import { isHttpUrl, splitDetailLinks, actionLink, linkTarget } from './links.js';
 import { safeMarkdown } from './markdown.js';
+import { nextState } from './state.js';
 
 const palette=(severity,t)=>severity==='critical'?t.blocked:severity==='warning'?t.working:severity==='notice'?t.accent:t.muted;
 // Herdr rewrites this prefix when the mod is cloned under another name.
@@ -20,18 +21,24 @@ const KEY_HINTS=['j/k move','Enter open','a action','. menu','o open link','r re
 const THUMB_W=64,THUMB_H=44,IMAGE_MAX_H=220;
 const isChoice=action=>action.handler==='answer_decision'||Boolean(action.choice);
 const message=error=>String(error?.message??error).slice(0,300);
+// The CLI's own reason, without the `trough:` its errors start with.
+const reason=error=>message(error).replace(/^trough: /,'');
+const FILING={read:'mark it read',unread:'mark it unread',done:'mark it done',undo:'undo done',snooze:'snooze it'};
 
 export default class Trough extends View {
   init(_props,cx) {
     this.dir=props()?.dir || `${home()}/.local/state/trough`;
     this.cli=`${appHome()}/mods/trough/bin/trough`;
     this.handle=cx.focus_handle(); this.scroll=ScrollHandle.new(); this.rows=[]; this.rejected=0; this.sel=null; this.filter={inbox:true,states:[],source:[],kind:[],severity:[],subject:[]}; this.filterPicker=false; this.filterField='source';
-    this.search=false; this.typing=false; this.error=null; this.pick=null; this.review=null; this.receipts=[]; this.deleteConfirm=null; this.deleting=false;
+    this.search=false; this.typing=false; this.error=null; this.pick=null; this.review=null; this.receipts=[]; this.deleteConfirm=null;
     // Cards: which are open, which groups show their earlier stories, which card the pointer is on,
     // the open menu ({id, link?}) and its keyboard row, and each summary's natural height.
     this.expanded=new Set(); this.groupOpen=new Set(); this.hovered=null; this.menu=null; this.menuIndex=0; this.measured=new Map(); this.width=420;
     // Standing approvals: the list, whether its panel is open, and the review sheet's checkbox.
     this.allowed=[]; this.allowView=false; this.alwaysAllow=false;
+    // Filing shows at once and is written after (fileStory): each story's writes in flight, the version
+    // of the pane's state each story was last changed at, and the stories deleted here.
+    this.writes=new Map(); this.stateVersion=0; this.touched=new Map(); this.gone=new Set();
     this.resetSearchInput(cx);
     this.commentInput=InputState.new({placeholder:'Optional comment'});
     this.commentInput.on('focus',(_e,cx)=>{this.commentTyping=true;cx.notify();});
@@ -88,15 +95,55 @@ export default class Trough extends View {
       finally { this.pruning=false; }
     });
   }
+  // One `trough feed` reads everything the pane shows. A reload asked for while one runs runs again after
+  // it, so a change that landed during the first read is never missed.
   async reload(cx) {
-    if(this.loading) return; this.loading=true;
-    try { this.rows=JSON.parse(await this.call(['ls','--all','--json'])); this.receipts=JSON.parse(await this.call(['receipts'])); this.rejected=JSON.parse(await this.call(['rejections'])).length; this.packs=JSON.parse(await this.call(['packages','list','--json'])); this.allowed=JSON.parse(await this.call(['allow','list','--json'])); this.error=null; this.alignSelection(); }
+    if(this.loading) { this.reloadAgain=true; return; }
+    this.loading=true;
+    try {
+      do {
+        this.reloadAgain=false;
+        const since=this.stateVersion,feed=JSON.parse(await this.call(['feed']));
+        this.rows=this.keepLocal(feed.rows,since); this.receipts=feed.receipts; this.rejected=feed.rejected; this.packs=feed.packs; this.allowed=feed.allowed; this.error=null; this.alignSelection();
+      } while(this.reloadAgain);
+    }
     catch(e) { this.error=e.message; }
     finally { this.loading=false; cx.notify(); }
   }
-  act(command,cx,extra=[]) {
-    const id=this.selected()?.story.id; if(!id) return;
-    cx.spawn(async cx=>{try {await this.call([command,id,...extra]); await this.reload(cx);} catch(e){this.error=e.message;cx.notify();}});
+  // A read that began before a story's state changed here, or while its write is in flight, is older
+  // than what the card shows: the card keeps its own state. Deleted stories stay gone.
+  keepLocal(rows,since) {
+    const local=new Map(this.rows.map(row=>[row.story.id,row.state]));
+    return rows.filter(row=>!this.gone.has(row.story.id)).map(row=>{
+      const id=row.story.id;
+      return local.has(id)&&(this.writes.has(id)||(this.touched.get(id)??-1)>since)?{...row,state:local.get(id)}:row;
+    });
+  }
+  setLocalState(id,state) {
+    const row=this.rows.find(r=>r.story.id===id); if(!row) return;
+    row.state=state; this.touched.set(id,++this.stateVersion);
+  }
+  act(command,cx,extra=[]) { const id=this.selected()?.story.id; if(id) this.fileStory(id,command,extra,cx); }
+  // Read, unread, done, undo and snooze change the card on the next frame; the CLI writes after the
+  // paint. One story's writes run in order. When the last one settles, the card takes the state the
+  // store reports, which undoes a change whose write failed; the error says which one until a later
+  // write to that story lands.
+  fileStory(id,command,extra,cx) {
+    const row=this.rows.find(r=>r.story.id===id); if(!row) return;
+    const until=command==='snooze'?extra[extra.indexOf('--until')+1]:undefined;
+    let write=this.writes.get(id);
+    if(!write) { write={confirmed:row.state,last:Promise.resolve(),count:0}; this.writes.set(id,write); }
+    this.setLocalState(id,nextState(row.state,command,{at:new Date().toISOString(),until}));
+    this.alignSelection(); cx.notify();
+    const previous=write.last; let settle; write.last=new Promise(resolve=>{settle=resolve;}); write.count++;
+    cx.spawn(async cx=>{
+      await previous;
+      try { write.confirmed=JSON.parse(await this.call([command,id,...extra])); if(this.filingError?.id===id&&this.error===this.filingError.text) this.error=null; }
+      catch(e) { this.error=`Could not ${FILING[command]}: ${reason(e)}`; this.filingError={id,text:this.error}; }
+      finally { settle(); }
+      if(--write.count===0) { this.writes.delete(id); this.setLocalState(id,write.confirmed); this.alignSelection(); }
+      cx.notify();
+    });
   }
   confirmDelete(cx) {
     const id=this.selected()?.story.id;
@@ -105,12 +152,13 @@ export default class Trough extends View {
   }
   deleteSelected(cx) {
     const id=this.selected()?.story.id;
-    if(!id||this.deleteConfirm!==id||this.deleting) return;
-    this.deleting=true;
+    if(!id||this.deleteConfirm!==id) return;
+    // The card goes at once; it comes back with the error if the delete fails.
+    this.gone.add(id); this.deleteConfirm=null; this.alignSelection(); cx.notify();
     cx.spawn(async cx=>{
-      try { await this.call(['delete',id]); this.deleteConfirm=null; await this.reload(cx); }
-      catch(e) { this.error=e.message; cx.notify(); }
-      finally { this.deleting=false; cx.notify(); }
+      try { await this.call(['delete',id]); this.rows=this.rows.filter(row=>row.story.id!==id); }
+      catch(e) { this.gone.delete(id); this.error=`Could not delete the story: ${reason(e)}`; }
+      finally { this.alignSelection(); cx.notify(); }
     });
   }
   actionReview(action,cx,option) {
@@ -188,7 +236,9 @@ export default class Trough extends View {
     else if(target?.path) this.openLocalPath(target.path,cx);
     else { this.error=`Trough opens only web links and absolute paths, not ${url.slice(0,200)}`; cx.notify(); }
   }
-  filtered() { return visible(this.rows,{...this.filter,text:this.input.value()}); }
+  // The stories on hand, less those deleted here whose delete is still being written.
+  shown() { return this.gone.size?this.rows.filter(row=>!this.gone.has(row.story.id)):this.rows; }
+  filtered() { return visible(this.shown(),{...this.filter,text:this.input.value()}); }
   cardList() { return cards(this.filtered(),this.groupOpen); }
   changeFilter(field,value,cx) {
     const selected=this.filter[field];
@@ -433,7 +483,7 @@ export default class Trough extends View {
       .child(div().text_size(11).text_color(t.muted).child('Its story, state, reviews, and receipts will be removed. The same ID is blocked from reappearing for 365 days.'))
       .when(story.kind==='decision'&&Boolean(story.decision?.options.length),el=>el.child(div().text_size(11).text_color(t.muted).child('Deleting this open decision only hides it from Trough; it does not answer the decision.')))
       .child(h_flex().gap(6)
-        .child(this.button('confirm-delete',this.deleting?'Deleting…':'Delete story',cx=>this.deleteSelected(cx),t,true))
+        .child(this.button('confirm-delete','Delete story',cx=>this.deleteSelected(cx),t,true))
         .child(this.button('cancel-delete','Cancel',cx=>{this.deleteConfirm=null;cx.notify();},t)));
   }
   // The full destination of each link, shown in an open card. Paths and web links are clickable.
@@ -516,8 +566,8 @@ export default class Trough extends View {
       .child(div().text_size(10).text_color(t.blocked).child(`This card could not be drawn: ${message(error)}`));
   }
   headerBar(t) {
-    const unread=this.rows.filter(r=>!r.state.read_at).length;
-    const filterChoices=choices(this.rows,this.filterField).filter(Boolean);
+    const rows=this.shown(),unread=rows.filter(r=>!r.state.read_at).length;
+    const filterChoices=choices(rows,this.filterField).filter(Boolean);
     const filterPicker=this.filterPicker?v_flex().gap(5)
       .child(h_flex().gap(5).children([
         this.button('view-inbox','Inbox',cx=>this.selectView(true,cx),t,this.filter.inbox),

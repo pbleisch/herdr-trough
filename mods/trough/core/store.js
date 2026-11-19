@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { ID, parseJson, validateStory, timestamp } from './schema.js';
+import { nextState } from '../state.js';
 
 export const rootDir = (override) => path.resolve(override || process.env.TROUGH_DIR || path.join(os.homedir(), '.local/state/trough'));
 const folder = (root, name) => path.join(root, name);
@@ -124,13 +125,8 @@ export async function readState(root,id) {
 export async function setState(root,id,operation,until,actor) {
   return withStateLock(root,async()=>{
     await stored(root,id);
-    const s=await readState(root,id);
-    if (operation==='read') s.read_at=now();
-    else if (operation==='unread') delete s.read_at;
-    else if (operation==='done') { s.done_at=now(); s.read_at??=s.done_at; if(actor) s.done_by=actor; else delete s.done_by; }
-    else if (operation==='undo') { delete s.done_at; delete s.done_by; }
-    else if (operation==='snooze') { timestamp(until,'until'); s.snoozed_until=until; }
-    else throw new Error('unknown state operation');
+    if (operation==='snooze') timestamp(until,'until');
+    const s=nextState(await readState(root,id),operation,{at:now(),until,actor});
     await replaceAtomic(folder(root,'state'),`${id}.json`,Buffer.from(JSON.stringify({v:1,...s})+'\n'));
     return s;
   });

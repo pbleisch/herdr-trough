@@ -148,6 +148,7 @@ From the CLI:
 trough ls --inbox                 # the pane's Inbox rule
 trough ls --unread --source monitor --search build
 trough ls --all --json            # every story, with state and action availability
+trough feed                       # what the pane shows, in one call: stories, receipts, rejections, packs, approvals
 trough show ID
 trough read ID | unread ID | done ID | undo ID
 trough snooze ID --until 2026-11-12T18:00:00Z
