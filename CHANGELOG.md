@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 - 2026-11-19
+
+- Done, the `d` key and Delete update the card at once. The change is saved after the pane redraws; if the save fails, the card comes back and the pane shows an error.
+- The feed reloads faster: the pane reads it with one `trough feed` call instead of several.
+
 ## 0.2.0 - 2026-11-15
 
 - Card feed: the pane is one column of cards, each holding everything about its story, in place of the list and detail view. A card shows the severity, source and time, the title, the summary clamped to two lines and a thumbnail; its caret opens it in place to the whole summary, the body, the full picture and every link. Done, Snooze, Read and a ⋯ menu replace the time on hover or selection. Links are chips whose ▾ lists what can be done with them, decision options sit on the card, and the review and delete sheets open inside it. Stories in one group stack into a single card with "N earlier". Title, summary, prompt and link lines wrap at the card's width.

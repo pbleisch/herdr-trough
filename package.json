@@ -1,6 +1,6 @@
 {
   "name": "herdr-trough",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A local activity feed for Herdr desktop: tools publish stories, the operator reads, files and reviews actions in a pane.",
   "license": "MIT",
   "private": true,

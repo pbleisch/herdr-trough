@@ -12,7 +12,7 @@ Trough is a local activity feed for [Herdr](https://herdr.dev) desktop. Tools an
 
 ## Status
 
-Version 0.2.0. The feed and the CLI need only Node.js (developed on Node.js 26; the tests also pass on Node.js 22). The pane needs Herdr desktop and has been used on macOS only.
+Version 0.2.1. The feed and the CLI need only Node.js (developed on Node.js 26; the tests also pass on Node.js 22). The pane needs Herdr desktop and has been used on macOS only.
 
 | Platform | Open and reveal actions | State |
 | --- | --- | --- |
